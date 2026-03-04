@@ -1,0 +1,35 @@
+name: Hornbach Brikety Scraper
+
+on:
+  schedule:
+    # Každý piatok o 16:00 CET (15:00 UTC v lete, 15:00 UTC v zime)
+    # GitHub Actions používa UTC, CET = UTC+1, CEST = UTC+2
+    # 14:00 UTC pokryje 15:00 CET (zima) / 16:00 CEST (leto)
+    - cron: '0 14 * * 5'
+  workflow_dispatch:  # Manuálne spustenie
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install playwright gspread google-auth openpyxl
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper
+        env:
+          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python scraper.py

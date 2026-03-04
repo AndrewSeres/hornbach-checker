@@ -1,0 +1,4 @@
+playwright>=1.40
+gspread>=6.0
+google-auth>=2.0
+openpyxl>=3.1
