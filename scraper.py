@@ -420,7 +420,7 @@ def write_to_sheets(products: list):
     gc = get_sheets_client()
     spreadsheet = gc.open_by_key(sheet_id)
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
-    date_col_header = datetime.now().strftime("%d.%m.%Y")
+    date_col_header = datetime.now().strftime("%d.%m.%Y %H:%M")
 
     # Zozbieraj unikátne predajne
     all_stores = sorted(
