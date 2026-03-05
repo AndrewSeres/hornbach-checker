@@ -276,6 +276,12 @@ tbody tr:hover { background: var(--surface2); }
 .y-axis-btn:hover { border-color: var(--border-bright); color: var(--text); }
 .y-axis-btn.active { background: var(--orange); color: #fff; border-color: var(--orange); }
 
+/* ── Section labels ── */
+.section-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--text-muted); margin-bottom: 10px;
+}
+
 /* ── Footer ── */
 .footer {
   position: relative; z-index: 1;
@@ -285,6 +291,17 @@ tbody tr:hover { background: var(--surface2); }
   margin-top: 60px;
 }
 .footer a { color: var(--orange); text-decoration: none; }
+
+/* ── Country selector ── */
+.country-btns { display: flex; gap: 6px; }
+.country-btn {
+  background: rgba(255,255,255,0.1); backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.2); color: rgba(255,255,255,0.7);
+  border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700;
+  cursor: pointer; font-family: inherit; transition: all 0.2s; letter-spacing: 0.5px;
+}
+.country-btn:hover { background: rgba(255,255,255,0.18); color: #fff; }
+.country-btn.active { background: rgba(255,255,255,0.25); color: #fff; border-color: rgba(255,255,255,0.5); }
 
 /* ── Responsive ── */
 @media (max-width: 768px) {
@@ -306,11 +323,16 @@ tbody tr:hover { background: var(--surface2); }
     <div style="display:flex;align-items:center;gap:16px">
       <div class="header-icon">🔥</div>
       <div>
-        <div class="header-sub">Hornbach Slovensko</div>
-        <h1>Brikety Tracker</h1>
+        <div class="header-sub">Hornbach Brikety Tracker</div>
+        <h1 id="header-title">Slovensko</h1>
       </div>
     </div>
     <div class="header-right">
+      <div class="country-btns">
+        <button class="country-btn active" onclick="switchCountry('SK',this)">SK</button>
+        <button class="country-btn" onclick="switchCountry('CZ',this)">CZ</button>
+        <button class="country-btn" onclick="switchCountry('AT',this)">AT</button>
+      </div>
       <div class="header-stat">
         <div class="dot"></div>
         <span class="mono" id="run-count">Načítavam...</span>
@@ -342,6 +364,13 @@ tbody tr:hover { background: var(--surface2); }
 
 <script>
 const SHEET_ID = '1TFzGrj5gJ5_j46iTSHCBLLT_DFkzVabZ5Ko6jwzik-s';
+
+const COUNTRY_CONFIG = {
+  SK: { label: 'Slovensko',   tabCurrent: 'Posledný beh',     tabHistory: 'História' },
+  CZ: { label: 'Česká republika', tabCurrent: 'CZ Posledný beh', tabHistory: 'CZ História' },
+  AT: { label: 'Österreich',  tabCurrent: 'AT Posledný beh',  tabHistory: 'AT História' },
+};
+let currentCountry = 'SK';
 const STORE_COLORS = {
   'Nitra':{ c:'#F4600C', g:'linear-gradient(135deg,#F4600C,#d9540b)' },
   'BA Ružinov':{ c:'#58a6ff', g:'linear-gradient(135deg,#58a6ff,#388bfd)' },
@@ -350,6 +379,34 @@ const STORE_COLORS = {
   'Prešov':{ c:'#d29922', g:'linear-gradient(135deg,#d29922,#bb8009)' },
 };
 const PRODUCT_COLORS = ['#F4600C','#58a6ff','#bc8cff','#3fb950','#d29922','#f85149','#39d2c0'];
+
+const CATEGORY_DEFS = [
+  { name: 'Valcové', color: '#F4600C', g: 'linear-gradient(135deg,#F4600C,#d9540b)', keys: ['valcov'] },
+  { name: 'Tehlové', color: '#58a6ff', g: 'linear-gradient(135deg,#58a6ff,#388bfd)', keys: ['tehl', 'hranat'] },
+  { name: 'Pelety',  color: '#3fb950', g: 'linear-gradient(135deg,#3fb950,#2ea043)', keys: ['pelet'] },
+  { name: 'Drevo',   color: '#d29922', g: 'linear-gradient(135deg,#d29922,#bb8009)', keys: ['drevo', 'triesk'] },
+  { name: 'Iné',     color: '#8b949e', g: 'linear-gradient(135deg,#8b949e,#6e7681)', keys: [] },
+];
+
+function stripDia(s) {
+  return s.normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+function getCategory(name) {
+  const n = stripDia(name.toLowerCase());
+  for (const cat of CATEGORY_DEFS.slice(0, -1)) {
+    if (cat.keys.some(k => n.includes(stripDia(k)))) return cat;
+  }
+  return CATEGORY_DEFS[CATEGORY_DEFS.length - 1];
+}
+
+function sortByCategory(arr) {
+  return [...arr].sort((a, b) => {
+    const ia = CATEGORY_DEFS.findIndex(c => c.name === getCategory(a.name).name);
+    const ib = CATEGORY_DEFS.findIndex(c => c.name === getCategory(b.name).name);
+    return ia - ib;
+  });
+}
 
 let DATA = { products:[], stores:[], historyRuns:[], historyMatrix:{} };
 let selectedProduct = 0;
@@ -419,7 +476,8 @@ async function loadData() {
   ['tab-current','tab-diff','tab-chart'].forEach(id=>document.getElementById(id).style.display='none');
 
   try {
-    const [current, history] = await Promise.all([fetchSheet('Posledný beh'), fetchSheet('História')]);
+    const cfg = COUNTRY_CONFIG[currentCountry];
+    const [current, history] = await Promise.all([fetchSheet(cfg.tabCurrent), fetchSheet(cfg.tabHistory)]);
 
     const fixedCols=['Produkt','Artikl č.','Cena'];
     const stores=Object.keys(current[0]||{}).filter(k=>!fixedCols.includes(k)&&k.trim());
@@ -471,6 +529,14 @@ async function loadData() {
   }
 }
 
+function switchCountry(country, btn) {
+  currentCountry = country;
+  document.querySelectorAll('.country-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('header-title').textContent = COUNTRY_CONFIG[country].label;
+  loadData();
+}
+
 function switchTab(id,btn) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   btn.classList.add('active');
@@ -485,28 +551,79 @@ function renderCurrent() {
   const {products,stores}=DATA;
   if(!products.length){document.getElementById('tab-current').innerHTML='<div class="center-msg"><div style="font-size:56px;margin-bottom:12px">📭</div><div style="font-size:15px;font-weight:600">Žiadne dáta</div><div style="color:var(--text-muted);font-size:13px;margin-top:6px">Spusti scraper aspoň raz.</div></div>';return;}
 
-  let html='<div class="cards">';
+  const sorted=sortByCategory(products);
+  const colCount=2+stores.length+1;
+
+  const catSummary=CATEGORY_DEFS.slice(0,-1).map(cat=>{
+    const ps=products.filter(p=>getCategory(p.name).name===cat.name);
+    const total=ps.reduce((s,p)=>s+stores.reduce((ss,st)=>ss+(p.stocks[st]??0),0),0);
+    return {cat,total,count:ps.length};
+  }).filter(x=>x.count>0);
+
+  let html='';
+
+  if(catSummary.length>0){
+    html+='<div class="section-label">Zásoby podľa typu produktu</div><div class="cards" style="margin-bottom:8px">';
+    catSummary.forEach(({cat,total,count})=>{
+      html+=`<div class="card">
+        <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${cat.g};border-radius:16px 16px 0 0"></div>
+        <div class="card-label"><span class="dot-sm" style="background:${cat.color}"></span>${cat.name}</div>
+        <div class="card-value mono" style="color:${cat.color}">${total.toLocaleString('sk')}</div>
+        <div class="card-unit">${count} ${count===1?'produkt':'produkty'} · všetky predajne</div>
+      </div>`;
+    });
+    html+='</div>';
+  }
+
+  html+='<div class="section-label" style="margin-top:20px">Zásoby podľa predajne</div><div class="cards">';
   stores.forEach(store=>{
     const total=products.reduce((s,p)=>s+(p.stocks[store]||0),0);
     const sc=storeColor(store);
-    html+=`<div class="card" style="border-top: none;">
+    html+=`<div class="card">
       <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${sc.g};border-radius:16px 16px 0 0;"></div>
       <div class="card-label"><span class="dot-sm" style="background:${sc.c}"></span>${store}</div>
       <div class="card-value mono" style="color:${sc.c}">${total.toLocaleString('sk')}</div>
-      <div class="card-unit">celkom kusov</div></div>`;
+      <div class="card-unit">balení na sklade</div>
+    </div>`;
   });
   html+='</div>';
 
-  html+='<div class="panel"><div class="panel-header"><span class="panel-title">Dostupnosť podľa produktu</span><span style="font-size:12px;color:var(--text-muted)">' + products.length + ' produktov</span></div>';
-  html+='<div style="overflow-x:auto"><table><thead><tr><th style="text-align:left;padding-left:22px">Produkt</th><th>Cena</th>';
-  stores.forEach(s=>{const sc=storeColor(s);html+=`<th style="color:${sc.c}">${s}</th>`});
-  html+='</tr></thead><tbody>';
-  products.forEach(p=>{
-    html+=`<tr><td><div class="prod-name">${p.name}</div><div class="prod-artikl mono">#${p.artikl}</div></td>`;
-    html+=`<td>${p.price?`<span class="price-tag mono">${p.price} €</span>`:'<span style="color:var(--text-muted)">–</span>'}</td>`;
-    stores.forEach(s=>html+=`<td>${stockBadge(p.stocks[s])}</td>`);
-    html+='</tr>';
+  html+=`<div class="panel" style="margin-top:28px">
+    <div class="panel-header"><span class="panel-title">Dostupnosť podľa produktu</span><span style="font-size:12px;color:var(--text-muted)">${products.length} produktov</span></div>
+    <div style="overflow-x:auto"><table><thead><tr>
+      <th style="text-align:left;padding-left:22px">Produkt</th><th>Cena</th>`;
+  stores.forEach(s=>{const sc=storeColor(s);html+=`<th style="color:${sc.c}">${s}</th>`;});
+  html+='<th style="color:var(--text-dim)">Spolu</th></tr></thead><tbody>';
+
+  let lastCat='';
+  sorted.forEach(p=>{
+    const cat=getCategory(p.name);
+    if(cat.name!==lastCat){
+      lastCat=cat.name;
+      html+=`<tr><td colspan="${colCount}" style="padding:7px 22px;background:${cat.color}14;border-top:2px solid ${cat.color}40;border-bottom:1px solid ${cat.color}28">
+        <span style="font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:${cat.color}">${cat.name}</span>
+      </td></tr>`;
+    }
+    const rowTotal=stores.reduce((s,st)=>s+(p.stocks[st]??0),0);
+    html+=`<tr>
+      <td><div class="prod-name">${p.name}</div><div class="prod-artikl mono">#${p.artikl}</div></td>
+      <td>${p.price?`<span class="price-tag mono">${p.price}</span>`:'<span style="color:var(--text-muted)">–</span>'}</td>`;
+    stores.forEach(s=>{html+=`<td>${stockBadge(p.stocks[s])}</td>`;});
+    html+=`<td><span class="mono" style="font-weight:700;font-size:13px;color:var(--text-dim)">${rowTotal.toLocaleString('sk')}</span></td>
+    </tr>`;
   });
+
+  catSummary.forEach(({cat,total})=>{
+    html+=`<tr style="background:${cat.color}0a">
+      <td colspan="2" style="padding:8px 22px;font-size:11px;font-weight:800;color:${cat.color};letter-spacing:1px;text-transform:uppercase;border-top:2px solid ${cat.color}40">Spolu ${cat.name}</td>`;
+    stores.forEach(st=>{
+      const stTotal=products.filter(p=>getCategory(p.name).name===cat.name).reduce((s,p)=>s+(p.stocks[st]??0),0);
+      html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:13px;color:${cat.color}">${stTotal.toLocaleString('sk')}</span></td>`;
+    });
+    html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:14px;color:${cat.color}">${total.toLocaleString('sk')}</span></td>
+    </tr>`;
+  });
+
   html+='</tbody></table></div></div>';
 
   html+=`<div class="chart-box">
@@ -562,6 +679,8 @@ function renderDiff() {
   }
 
   const pi=historyRuns.length-2, ci=historyRuns.length-1;
+  const sorted=sortByCategory(products);
+
   let html=`<div class="diff-banner">
     <span style="font-weight:700;color:var(--text)">${historyRuns[pi]}</span>
     <span class="diff-arrow">→</span>
@@ -571,11 +690,43 @@ function renderDiff() {
     <span class="diff-label diff-label-green">▲ naskladnené</span>
   </div>`;
 
+  // Category net summary chips
+  const catNets=CATEGORY_DEFS.slice(0,-1).map(cat=>{
+    const ps=products.filter(p=>getCategory(p.name).name===cat.name);
+    if(!ps.length) return null;
+    let net=0;
+    ps.forEach(prod=>{
+      stores.forEach(store=>{
+        const vals=historyMatrix[prod.name]?.[store];
+        if(!vals) return;
+        const pn=Number(vals[pi]), cn=Number(vals[ci]);
+        if(!isNaN(pn)&&!isNaN(cn)) net+=cn-pn;
+      });
+    });
+    return {cat,net};
+  }).filter(Boolean);
+
+  if(catNets.length>0){
+    html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">';
+    catNets.forEach(({cat,net})=>{
+      const sign=net<0?'▼ ':net>0?'▲ ':'';
+      const color=net<0?'var(--red)':net>0?'var(--green)':'var(--text-muted)';
+      html+=`<div style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 16px">
+        <span style="width:8px;height:8px;border-radius:50%;background:${cat.color};flex-shrink:0;display:inline-block"></span>
+        <span style="font-size:12px;font-weight:700;color:var(--text-dim)">${cat.name}</span>
+        <span style="font-size:14px;font-weight:800;color:${color};font-family:'JetBrains Mono',monospace">${sign}${Math.abs(net).toLocaleString('sk')}</span>
+      </div>`;
+    });
+    html+='</div>';
+  }
+
   html+='<div class="panel"><div style="overflow-x:auto"><table><thead><tr>';
   html+='<th style="text-align:left;padding-left:22px">Produkt</th><th>Predajňa</th><th style="color:var(--text-muted)">Predtým</th><th>Teraz</th><th style="color:var(--orange)">Rozdiel</th>';
   html+='</tr></thead><tbody>';
 
-  products.forEach(prod=>{
+  let lastCat='';
+  sorted.forEach(prod=>{
+    const cat=getCategory(prod.name);
     stores.forEach(store=>{
       const vals=historyMatrix[prod.name]?.[store];
       if(!vals) return;
@@ -585,6 +736,12 @@ function renderDiff() {
       const d=(!isNaN(pn)&&!isNaN(cn))?cn-pn:null;
       const cls=d!==null&&d<0?'diff-row-neg':d!==null&&d>0?'diff-row-pos':'';
       const sc=storeColor(store);
+      if(cat.name!==lastCat){
+        lastCat=cat.name;
+        html+=`<tr><td colspan="5" style="padding:7px 22px;background:${cat.color}14;border-top:2px solid ${cat.color}40;border-bottom:1px solid ${cat.color}28">
+          <span style="font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:${cat.color}">${cat.name}</span>
+        </td></tr>`;
+      }
       html+=`<tr class="${cls}">
         <td style="text-align:left;padding-left:22px;font-weight:600;font-size:13px">${prod.name}</td>
         <td><span style="color:${sc.c};font-weight:700;font-size:13px">${store}</span></td>
@@ -601,12 +758,29 @@ function renderChart() {
   const {products,stores,historyRuns}=DATA;
   if(!products.length) return;
 
-  let html='<div class="prod-btns">';
-  products.forEach((p,i)=>{
-    const c=PRODUCT_COLORS[i%PRODUCT_COLORS.length];
-    const act=i===selectedProduct;
-    html+=`<button class="prod-btn ${act?'active':''}" style="${act?`background:${c};border-color:${c}`:''}" onclick="selectProduct(${i})">${p.name}</button>`;
+  let html='<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px">';
+  CATEGORY_DEFS.slice(0,-1).forEach(cat=>{
+    const ps=products.map((p,i)=>({p,i})).filter(({p})=>getCategory(p.name).name===cat.name);
+    if(!ps.length) return;
+    html+=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:${cat.color};white-space:nowrap;min-width:72px">${cat.name}</span>`;
+    ps.forEach(({p,i})=>{
+      const c=PRODUCT_COLORS[i%PRODUCT_COLORS.length];
+      const act=i===selectedProduct;
+      html+=`<button class="prod-btn ${act?'active':''}" style="${act?`background:${c};border-color:${c}`:''}" onclick="selectProduct(${i})">${p.name}</button>`;
+    });
+    html+='</div>';
   });
+  const uncats=products.map((p,i)=>({p,i})).filter(({p})=>getCategory(p.name).name==='Iné');
+  if(uncats.length){
+    html+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);white-space:nowrap;min-width:72px">Iné</span>';
+    uncats.forEach(({p,i})=>{
+      const c=PRODUCT_COLORS[i%PRODUCT_COLORS.length];
+      const act=i===selectedProduct;
+      html+=`<button class="prod-btn ${act?'active':''}" style="${act?`background:${c};border-color:${c}`:''}" onclick="selectProduct(${i})">${p.name}</button>`;
+    });
+    html+='</div>';
+  }
   html+='</div>';
 
   html+=`<div class="chart-box">

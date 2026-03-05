@@ -1,10 +1,10 @@
 """
-Hornbach Brikety Tracker – CI scraper + Google Sheets
-=====================================================
+Hornbach Brikety Tracker – Multi-country CI scraper + Google Sheets
+====================================================================
 Beží v GitHub Actions každý piatok o 16:00.
-Scrapne drevené brikety, zapíše do Google Sheets.
+Scrapuje SK + CZ + AT, zapisuje do Google Sheets.
 
-Požiadavky: pip install playwright gspread google-auth openpyxl
+Požiadavky: pip install playwright gspread google-auth
             playwright install chromium
 """
 
@@ -29,255 +29,321 @@ except ImportError:
     print("pip install gspread google-auth")
     sys.exit(1)
 
-# ── Konfigurácia ──────────────────────────────────────────────────────────────
-CATEGORY_URL = "https://www.hornbach.sk/c/krby-radiatory-a-klimatizacie/palivove-drevo-pelety-a-brikety/S15929/"
-KEYWORDS = ["briketa", "brikety", "brikiet", "briket"]
-EXCLUDE_KEYWORDS = ["hnedouholn", "uholn", "hnedouhol"]
 
-CANONICAL_STORES = [
-    "HORNBACH Nitra",
-    "HORNBACH Bratislava - Ružinov",
-    "HORNBACH Bratislava - Devínska Nová Ves",
-    "HORNBACH Košice",
-    "HORNBACH Prešov",
+# ── Per-country config ─────────────────────────────────────────────────────────
+COUNTRY_CONFIGS = [
+    {
+        "key": "SK",
+        "category_url": "https://www.hornbach.sk/c/krby-radiatory-a-klimatizacie/palivove-drevo-pelety-a-brikety/S15929/",
+        "keywords": ["briketa", "brikety", "brikiet", "briket"],
+        "exclude_keywords": ["hnedouholn", "uholn", "hnedouhol"],
+        "locale": "sk-SK",
+        "tab_prefix": "",          # empty = original tab names, backward-compatible
+        "currency_re": r'(\d+[,\.]\d{2})\s*€',
+    },
+    {
+        "key": "CZ",
+        "category_url": "https://www.hornbach.cz/c/kamna-radiatory-a-klimatizace/brikety-pelety-a-palivove-drevo/S12498/",
+        "keywords": ["briket"],
+        "exclude_keywords": ["hnedouheln", "uheln"],   # catches hnědouhelné, uhelné via NFKD
+        "locale": "cs-CZ",
+        "tab_prefix": "CZ ",
+        "currency_re": r'(\d+[,\.]\d{2})\s*(?:Kč|CZK|€)',
+    },
+    {
+        "key": "AT",
+        "category_url": "https://www.hornbach.at/c/heizen-klima-lueftung/holzbriketts-brennholz-heizpellets/S3028/",
+        "keywords": ["brikett"],
+        "exclude_keywords": ["braunkohl"],             # catches Braunkohle, Braunkohlebrikett
+        "locale": "de-AT",
+        "tab_prefix": "AT ",
+        "currency_re": r'(\d+[,\.]\d{2})\s*€',
+    },
 ]
 
-STORE_SHORT = {
-    "HORNBACH Nitra": "Nitra",
-    "HORNBACH Bratislava - Ružinov": "BA Ružinov",
-    "HORNBACH Bratislava - Devínska Nová Ves": "BA Devínska",
-    "HORNBACH Košice": "Košice",
-    "HORNBACH Prešov": "Prešov",
-}
+# Cookie button texts per language
+COOKIE_SELECTORS = [
+    "#onetrust-accept-btn-handler",
+    "button:has-text('Prijať')", "button:has-text('Súhlasím')",
+    "button:has-text('Prijat')", "button:has-text('Suhlasim')",
+    "button:has-text('Akceptovat')",
+    "button:has-text('Přijmout vše')", "button:has-text('Souhlasím')",
+    "button:has-text('Alle akzeptieren')", "button:has-text('Akzeptieren')",
+    "button:has-text('Alle Cookies akzeptieren')",
+]
+
+# Availability button texts per language
+AVAIL_TEXTS = [
+    # SK
+    "SKONTROLOVAT DOSTUPNOST", "SKONTROLOVAŤ DOSTUPNOSŤ",
+    "Skontrolovat dostupnost", "Skontrolovať dostupnosť",
+    "dostupnost v predajni", "dostupnosť v predajni",
+    # CZ
+    "ZKONTROLOVAT DOSTUPNOST", "Zkontrolovat dostupnost",
+    "dostupnost v prodejně", "DOSTUPNOST V PRODEJNĚ",
+    # DE/AT
+    "VERFÜGBARKEIT PRÜFEN", "Verfügbarkeit prüfen",
+    "Im Markt verfügbar", "Markt wechseln",
+    "Verfügbarkeit in Märkten",
+]
+
+# EAN expand button texts
+EAN_EXPAND_TEXTS = [
+    "VIAC INFORMACII O VYROBKU", "VIAC INFORMÁCIÍ O VÝROBKU",
+    "Viac informacii", "Viac informácií",
+    "VÍCE INFORMACÍ O VÝROBKU", "Více informací",
+    "MEHR INFORMATIONEN", "Mehr Informationen", "Produktdetails",
+]
+
+# Out-of-stock patterns (all languages)
+OOS_RE = re.compile(
+    r'nie je k dispoz|nedostupn|momentálne nie|momentalne nie|'
+    r'vypredané|vypredane|0 balení|0 balenie|'
+    r'není k dispozici|není skladem|momentálně není|'
+    r'nicht verfügbar|ausverkauft|momentan nicht|nicht auf Lager|'
+    r'0 Stück|0 St\.',
+    re.IGNORECASE
+)
+
+STOCK_RE = re.compile(
+    r'(\d[\d\s]*)\s*(balen[ií]e?|ks\b|kus|Stück\b|Stk\b|St\.)',
+    re.IGNORECASE
+)
+
+STOCK_LABEL_RE = re.compile(
+    r'dostupn[éeý]\s*>?\s*(\d+)|verfügbar[:\s]*(\d+)',
+    re.IGNORECASE
+)
 
 
-def matches_keywords(text: str) -> bool:
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def matches_keywords(text: str, keywords: list, exclude_keywords: list) -> bool:
     t = text.lower()
     t_plain = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
-    if not any(k in t or k in t_plain for k in KEYWORDS):
+    if not any(k in t or k in t_plain for k in keywords):
         return False
-    if any(k in t or k in t_plain for k in EXCLUDE_KEYWORDS):
+    if any(k in t or k in t_plain for k in exclude_keywords):
         return False
     return True
 
 
-def canonicalize_store(raw_name: str):
+def canonicalize_store(raw_name: str) -> str | None:
+    """Clean store name from modal line. Returns None for non-store lines."""
     raw_lower = raw_name.lower().strip()
-    if "etky predajne" in raw_lower or "vsetky predajne" in raw_lower:
+    skip_fragments = [
+        "etky predajne", "vsetky predajne",
+        "vsechny prodejny", "alle filialen", "alle markte", "alle märkte",
+        "vyhledat prodejnu", "markt suchen", "markt wechseln",
+    ]
+    if any(f in raw_lower for f in skip_fragments):
         return None
     if "hornbach" not in raw_lower:
         return None
-    for canonical in CANONICAL_STORES:
-        canon_lower = canonical.lower()
-        if raw_lower.startswith(canon_lower):
-            return canonical
-        city_part = canon_lower.replace("hornbach ", "").strip()
-        city_keywords = [w.strip() for w in city_part.split("-")]
-        last_keyword = city_keywords[-1].strip()
-        if last_keyword and last_keyword in raw_lower:
-            return canonical
+    # Take up to first comma, strip trailing punctuation
     base = raw_name.split(",")[0].strip().rstrip(".")
-    return base
+    return re.sub(r'\s+', ' ', base).strip()
 
 
-def store_sort_key(s):
-    for i, canonical in enumerate(CANONICAL_STORES):
-        if s == canonical:
-            return (i, s)
-    return (99, s)
+def store_short_name(canonical: str) -> str:
+    """Strip HORNBACH prefix for display."""
+    n = canonical.replace("HORNBACH", "").strip().lstrip("- ").strip()
+    return re.sub(r'\s+', ' ', n).strip() or canonical
 
 
-# ── Scraper ───────────────────────────────────────────────────────────────────
-async def scrape():
+# ── Scraper ────────────────────────────────────────────────────────────────────
+async def scrape_country(context, config: dict) -> list:
     products = []
-    print("Nacitavam kategoriu brikety...")
+    key = config["key"]
+    keywords = config["keywords"]
+    exclude_kw = config["exclude_keywords"]
+    base_url = f"https://www.hornbach.{key.lower()}"
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 900},
-            locale="sk-SK",
-        )
-        page = await context.new_page()
+    print(f"\n{'='*60}")
+    print(f"  Krajina: {key}  |  {config['category_url']}")
+    print(f"{'='*60}")
 
-        await page.goto(CATEGORY_URL, wait_until="networkidle", timeout=60000)
+    page = await context.new_page()
+    await page.goto(config["category_url"], wait_until="networkidle", timeout=60000)
 
-        # Cookie banner
-        for sel in [
-            "#onetrust-accept-btn-handler",
-            "button:has-text('Prijat')", "button:has-text('Suhlasim')",
-            "button:has-text('Akceptovat')", "button:has-text('Prijať')",
-            "button:has-text('Súhlasím')",
-        ]:
+    # Dismiss cookie banner
+    for sel in COOKIE_SELECTORS:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=2000):
+                await btn.click()
+                await page.wait_for_timeout(800)
+                break
+        except Exception:
+            pass
+
+    # Lazy-load products by scrolling
+    for _ in range(8):
+        await page.evaluate("window.scrollBy(0, 800)")
+        await page.wait_for_timeout(600)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await page.wait_for_timeout(500)
+
+    all_links = await page.query_selector_all("a[href*='/p/']")
+    print(f"  Linkov na stranke: {len(all_links)}")
+
+    seen_urls: set[str] = set()
+    product_links = []
+
+    for link in all_links:
+        try:
+            href = await link.get_attribute("href")
+            if not href or '/p/' not in href:
+                continue
+            full_url = href if href.startswith("http") else f"{base_url}{href}"
+            if full_url in seen_urls:
+                continue
+
+            text = ""
             try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=2000):
-                    await btn.click()
-                    await page.wait_for_timeout(800)
-                    break
+                text = (await link.inner_text()).strip()
             except Exception:
                 pass
 
-        # Scroll
-        for _ in range(8):
-            await page.evaluate("window.scrollBy(0, 800)")
-            await page.wait_for_timeout(600)
-        await page.evaluate("window.scrollTo(0, 0)")
-        await page.wait_for_timeout(500)
-
-        seen_urls = set()
-        product_links = []
-
-        all_links = await page.query_selector_all("a[href*='/p/']")
-        print(f"  Linkov na stranke: {len(all_links)}")
-
-        for link in all_links:
-            try:
-                href = await link.get_attribute("href")
-                if not href or '/p/' not in href:
-                    continue
-                full_url = href if href.startswith("http") else f"https://www.hornbach.sk{href}"
-                if full_url in seen_urls:
-                    continue
-
-                text = ""
+            if not text or len(text) < 5:
                 try:
-                    text = (await link.inner_text()).strip()
+                    text = await page.evaluate("""el => {
+                        const tile = el.closest('article') || el.closest('li') ||
+                                     el.closest('[class*="Tile"]') || el.closest('[class*="tile"]') ||
+                                     el.closest('[class*="product"]') || el.parentElement;
+                        return tile ? tile.innerText : '';
+                    }""", link)
+                    text = (text or "").strip()
                 except Exception:
                     pass
 
-                if not text or len(text) < 5:
-                    try:
-                        text = await page.evaluate("""el => {
-                            const tile = el.closest('article') || el.closest('li') ||
-                                         el.closest('[class*="Tile"]') || el.closest('[class*="product"]') ||
-                                         el.parentElement;
-                            return tile ? tile.innerText : '';
-                        }""", link)
-                        text = (text or "").strip()
-                    except Exception:
-                        pass
+            if not text:
+                continue
 
-                if not text:
-                    continue
+            if matches_keywords(text, keywords, exclude_kw):
+                seen_urls.add(full_url)
+                name = next(
+                    (l.strip() for l in text.splitlines() if len(l.strip()) > 8),
+                    text[:80]
+                )
+                product_links.append({"url": full_url, "name": name[:100]})
+                print(f"  + {name[:65]}")
+        except Exception:
+            pass
 
-                if matches_keywords(text):
-                    seen_urls.add(full_url)
-                    name = next(
-                        (l.strip() for l in text.splitlines() if len(l.strip()) > 8),
-                        text[:80]
-                    )
-                    product_links.append({"url": full_url, "name": name[:100]})
-                    print(f"  + {name[:65]}")
-            except Exception:
-                pass
+    await page.close()
+    print(f"\n  {len(product_links)} produktov na spracovanie")
 
-        print(f"\n{len(product_links)} produktov na spracovanie")
+    if not product_links:
+        print("  Ziadne produkty.")
+        return products
 
-        if not product_links:
-            print("Ziadne produkty.")
-            await browser.close()
-            return products
+    for idx, prod in enumerate(product_links):
+        print(f"\n  [{idx+1}/{len(product_links)}] {prod['name']}")
 
-        # Detail produktu
-        for idx, prod in enumerate(product_links):
-            print(f"\n[{idx+1}/{len(product_links)}] {prod['name']}")
+        prod_data = {
+            "name": prod["name"],
+            "ean": "",
+            "artikel_nr": "",
+            "price": "",
+            "url": prod["url"],
+            "stores": {},
+        }
 
-            prod_data = {
-                "name": prod["name"],
-                "ean": "",
-                "artikel_nr": "",
-                "price": "",
-                "url": prod["url"],
-                "stores": {}
-            }
+        m = re.search(r'/(\d{5,})/?', prod["url"])
+        if m:
+            prod_data["artikel_nr"] = m.group(1)
 
-            m = re.search(r'/(\d{5,})/?', prod["url"])
-            if m:
-                prod_data["artikel_nr"] = m.group(1)
+        pp = None
+        try:
+            pp = await context.new_page()
+            await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
+            await pp.wait_for_timeout(2000)
 
-            pp = None
-            try:
-                pp = await context.new_page()
-                await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
-                await pp.wait_for_timeout(2000)
-
-                # Cena
+            # Price
+            for price_sel in [
+                "[data-testid='article-price'] [class*='value']",
+                "[class*='article-price'] [class*='value']",
+                "[class*='ArticlePrice'] [class*='value']",
+                "[class*='price-value']",
+                "[class*='Price'] strong",
+                "[class*='price'] strong",
+                "strong[class*='price']",
+            ]:
                 try:
-                    for price_sel in [
-                        "[data-testid='article-price'] [class*='value']",
-                        "[class*='article-price'] [class*='value']",
-                        "[class*='ArticlePrice'] [class*='value']",
-                        "[class*='price-value']",
-                        "[class*='Price'] strong",
-                        "[class*='price'] strong",
-                        "strong[class*='price']",
-                    ]:
-                        el = pp.locator(price_sel).first
-                        if await el.is_visible(timeout=800):
-                            prod_data["price"] = (await el.inner_text()).strip()
+                    el = pp.locator(price_sel).first
+                    if await el.is_visible(timeout=800):
+                        prod_data["price"] = (await el.inner_text()).strip()
+                        break
+                except Exception:
+                    pass
+
+            if not prod_data["price"]:
+                try:
+                    body_text = await pp.inner_text("body")
+                    pm = re.search(config["currency_re"], body_text)
+                    if pm:
+                        prod_data["price"] = f"{pm.group(1)} €"
+                except Exception:
+                    pass
+
+            # Expand EAN section
+            for expand_text in EAN_EXPAND_TEXTS:
+                try:
+                    btn = pp.get_by_text(expand_text, exact=False).first
+                    if await btn.is_visible(timeout=800):
+                        await btn.click()
+                        await pp.wait_for_timeout(700)
+                        break
+                except Exception:
+                    pass
+
+            # EAN from table
+            try:
+                rows = await pp.query_selector_all("tr")
+                for row in rows:
+                    row_text = await row.inner_text()
+                    if "EAN" in row_text:
+                        cells = await row.query_selector_all("td")
+                        if len(cells) >= 2:
+                            prod_data["ean"] = (await cells[-1].inner_text()).strip()
+                        if prod_data["ean"]:
                             break
+            except Exception:
+                pass
+
+            if not prod_data["ean"]:
+                try:
+                    body = await pp.inner_text("body")
+                    em = re.search(r'EAN\s*\n?\s*([0-9]{8,}(?:[,\s]+[0-9]{8,})*)', body)
+                    if em:
+                        prod_data["ean"] = em.group(1).strip()
                 except Exception:
                     pass
 
-                if not prod_data["price"]:
-                    try:
-                        body_text = await pp.inner_text("body")
-                        pm = re.search(r'(\d+,\d{2})\s*€', body_text)
-                        if pm:
-                            prod_data["price"] = f"{pm.group(1)} €"
-                    except Exception:
-                        pass
+            print(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
 
-                # EAN
-                for expand_text in [
-                    "VIAC INFORMACII O VYROBKU", "VIAC INFORMÁCIÍ O VÝROBKU",
-                    "Viac informacii", "Viac informácií",
+            # Click availability button
+            clicked = False
+            for avail_text in AVAIL_TEXTS:
+                try:
+                    btn = pp.get_by_text(avail_text, exact=False).first
+                    if await btn.is_visible(timeout=1500):
+                        await btn.click()
+                        await pp.wait_for_timeout(3000)
+                        clicked = True
+                        break
+                except Exception:
+                    pass
+
+            if not clicked:
+                for btn_sel in [
+                    "[class*='StoreAvailability'] button",
+                    "[class*='store-availability'] button",
+                    "button[class*='store']",
                 ]:
                     try:
-                        btn = pp.get_by_text(expand_text, exact=False).first
+                        btn = pp.locator(btn_sel).first
                         if await btn.is_visible(timeout=800):
-                            await btn.click()
-                            await pp.wait_for_timeout(700)
-                            break
-                    except Exception:
-                        pass
-
-                try:
-                    rows = await pp.query_selector_all("tr")
-                    for row in rows:
-                        row_text = await row.inner_text()
-                        if "EAN" in row_text:
-                            cells = await row.query_selector_all("td")
-                            if len(cells) >= 2:
-                                prod_data["ean"] = (await cells[-1].inner_text()).strip()
-                            if prod_data["ean"]:
-                                break
-                except Exception:
-                    pass
-
-                if not prod_data["ean"]:
-                    try:
-                        body = await pp.inner_text("body")
-                        em2 = re.search(r'EAN\s*\n?\s*([0-9]{8,}(?:[,\s]+[0-9]{8,})*)', body)
-                        if em2:
-                            prod_data["ean"] = em2.group(1).strip()
-                    except Exception:
-                        pass
-
-                print(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
-
-                # Dostupnosť
-                clicked = False
-                for avail_text in [
-                    "SKONTROLOVAT DOSTUPNOST", "SKONTROLOVAŤ DOSTUPNOSŤ",
-                    "Skontrolovat dostupnost", "Skontrolovať dostupnosť",
-                    "dostupnost v predajni", "dostupnosť v predajni",
-                ]:
-                    try:
-                        btn = pp.get_by_text(avail_text, exact=False).first
-                        if await btn.is_visible(timeout=1500):
                             await btn.click()
                             await pp.wait_for_timeout(3000)
                             clicked = True
@@ -285,109 +351,96 @@ async def scrape():
                     except Exception:
                         pass
 
-                if not clicked:
-                    for btn_sel in [
-                        "[class*='StoreAvailability'] button",
-                        "[class*='store-availability'] button",
-                        "button[class*='store']",
-                    ]:
-                        try:
-                            btn = pp.locator(btn_sel).first
-                            if await btn.is_visible(timeout=800):
-                                await btn.click()
-                                await pp.wait_for_timeout(3000)
-                                clicked = True
-                                break
-                        except Exception:
-                            pass
+            # Read modal text
+            modal_text = ""
+            for modal_sel in ["[role='dialog']", "[class*='Modal']", "[class*='modal']", "[class*='Overlay']"]:
+                try:
+                    modal = pp.locator(modal_sel).first
+                    if await modal.is_visible(timeout=2000):
+                        t = await modal.inner_text()
+                        if "HORNBACH" in t:
+                            modal_text = t
+                            break
+                except Exception:
+                    pass
 
-                # Modal
-                modal_text = ""
-                for modal_sel in ["[role='dialog']", "[class*='Modal']", "[class*='modal']", "[class*='Overlay']"]:
-                    try:
-                        modal = pp.locator(modal_sel).first
-                        if await modal.is_visible(timeout=2000):
-                            t = await modal.inner_text()
-                            if "HORNBACH" in t:
-                                modal_text = t
-                                break
-                    except Exception:
-                        pass
+            if not modal_text or "HORNBACH" not in modal_text:
+                try:
+                    modal_text = await pp.inner_text("body")
+                except Exception:
+                    pass
 
-                if not modal_text or "HORNBACH" not in modal_text:
-                    try:
-                        modal_text = await pp.inner_text("body")
-                    except Exception:
-                        pass
-
-                # Parse stores
-                if modal_text and "HORNBACH" in modal_text:
-                    lines = [l.strip() for l in modal_text.splitlines() if l.strip()]
-                    found_stores = {}
-                    i = 0
-                    while i < len(lines):
-                        line = lines[i]
-                        if "HORNBACH" in line:
-                            canonical = canonicalize_store(line)
-                            if canonical is not None:
-                                stock_val = None
-                                for j in range(i + 1, min(i + 15, len(lines))):
-                                    jline = lines[j]
-                                    if "HORNBACH" in jline and j > i:
+            # Parse stores from modal
+            if modal_text and "HORNBACH" in modal_text:
+                lines = [l.strip() for l in modal_text.splitlines() if l.strip()]
+                found_stores: dict[str, int | str] = {}
+                i = 0
+                while i < len(lines):
+                    line = lines[i]
+                    if "HORNBACH" in line:
+                        canonical = canonicalize_store(line)
+                        if canonical is not None:
+                            stock_val = None
+                            for j in range(i + 1, min(i + 15, len(lines))):
+                                jline = lines[j]
+                                if "HORNBACH" in jline and j > i:
+                                    break
+                                # "123 balení / Stück / ks"
+                                sm = STOCK_RE.search(jline)
+                                if sm:
+                                    stock_val = int(sm.group(1).replace(" ", ""))
+                                    break
+                                # Bare number with contextual confirmation
+                                if re.match(r'^\d+$', jline):
+                                    nearby = " ".join(lines[max(0, j-2):min(len(lines), j+3)]).lower()
+                                    if any(w in nearby for w in [
+                                        "dostupn", "skladom", "dispoz", "baleni", "balení",
+                                        "verfügb", "lager", "vorrätig", "k dispozici",
+                                    ]):
+                                        stock_val = int(jline)
                                         break
-                                    sm = re.search(r'(\d[\d\s]*)\s*(balen[ií]e?|ks\b|kus)', jline, re.IGNORECASE)
-                                    if sm:
-                                        stock_val = int(sm.group(1).replace(" ", ""))
-                                        break
-                                    if re.match(r'^\d+$', jline):
-                                        nearby = " ".join(lines[max(0, j-2):min(len(lines), j+3)]).lower()
-                                        if any(w in nearby for w in ["dostupn", "skladom", "dispoz", "baleni", "balení", "objedn"]):
-                                            stock_val = int(jline)
-                                            break
-                                    if re.search(r'nie je k dispoz|nedostupn|momentálne nie|momentalne nie|vypredané|vypredane|0 balení|0 balenie', jline, re.IGNORECASE):
-                                        stock_val = 0
-                                        break
-                                    sm2 = re.search(r'dostupn[éeý]\s*>?\s*(\d+)', jline, re.IGNORECASE)
-                                    if sm2:
-                                        stock_val = int(sm2.group(1))
-                                        break
+                                # Out-of-stock phrase
+                                if OOS_RE.search(jline):
+                                    stock_val = 0
+                                    break
+                                # "Dostupné > 50" / "verfügbar: 12"
+                                sm2 = STOCK_LABEL_RE.search(jline)
+                                if sm2:
+                                    stock_val = int(sm2.group(1) or sm2.group(2))
+                                    break
 
-                                if canonical in found_stores:
-                                    if found_stores[canonical] == "?" and stock_val is not None:
-                                        found_stores[canonical] = stock_val
-                                else:
-                                    found_stores[canonical] = stock_val if stock_val is not None else "?"
+                            if canonical in found_stores:
+                                if found_stores[canonical] == "?" and stock_val is not None:
+                                    found_stores[canonical] = stock_val
+                            else:
+                                found_stores[canonical] = stock_val if stock_val is not None else "?"
 
-                                print(f"  {STORE_SHORT.get(canonical, canonical)}: {found_stores[canonical]}")
-                        i += 1
-                    prod_data["stores"] = found_stores
+                            print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                    i += 1
+                prod_data["stores"] = found_stores
 
-            except Exception as e:
-                print(f"  Chyba: {e}")
-            finally:
-                if pp:
-                    try:
-                        await pp.close()
-                    except Exception:
-                        pass
+        except Exception as e:
+            print(f"  Chyba: {e}")
+        finally:
+            if pp:
+                try:
+                    await pp.close()
+                except Exception:
+                    pass
 
-            products.append(prod_data)
-            await asyncio.sleep(0.5)
+        products.append(prod_data)
+        await asyncio.sleep(0.5)
 
-        await browser.close()
-
-    print(f"\nHotovo – {len(products)} produktov")
+    print(f"\n  {key}: {len(products)} produktov hotovo")
     return products
 
 
-# ── Google Sheets ─────────────────────────────────────────────────────────────
+# ── Google Sheets ──────────────────────────────────────────────────────────────
 def get_sheets_client():
-    """Vytvorí gspread klienta z env premennej alebo súboru."""
     creds_json = os.environ.get("GOOGLE_SHEETS_CREDS")
     if creds_json:
         creds_dict = json.loads(creds_json)
     else:
-        # Lokálny vývoj — hľadaj súbor
         creds_path = os.path.join(os.path.dirname(__file__), "service_account.json")
         if os.path.exists(creds_path):
             with open(creds_path) as f:
@@ -404,120 +457,97 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 
-def write_to_sheets(products: list):
-    """Zapíše aktuálny stav do Google Sheets.
+def write_to_sheets(products: list, spreadsheet, tab_prefix: str = ""):
+    """Write one country's results to its three sheet tabs."""
+    if not products:
+        return
 
-    Sheet 'Data' — append nového stĺpca s dátumom:
-    Riadok 1: hlavičky (Produkt, EAN, Artikl, Cena, [dátumy...])
-    Riadok 2+: pre každú kombináciu produkt+predajňa
-
-    Sheet 'Posledný beh' — prehľadná tabuľka aktuálneho stavu
-    """
-    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if not sheet_id:
-        print("CHYBA: GOOGLE_SHEET_ID env nie je nastavený")
-        sys.exit(1)
-
-    gc = get_sheets_client()
-    spreadsheet = gc.open_by_key(sheet_id)
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
     date_col_header = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    # Zozbieraj unikátne predajne
-    all_stores = sorted(
-        set(s for p in products for s in p["stores"].keys()),
-        key=store_sort_key
-    )
+    # Discover stores in order of first appearance (no hardcoded list needed)
+    seen_stores: list[str] = []
+    for p in products:
+        for s in p["stores"]:
+            if s not in seen_stores:
+                seen_stores.append(s)
+    all_stores = seen_stores
 
-    # ── Sheet: Posledný beh ───────────────────────────────────────────────
+    tab_current = f"{tab_prefix}Posledný beh".strip()
+    tab_hist    = f"{tab_prefix}História".strip()
+    tab_diff    = f"{tab_prefix}Rozdiel".strip()
+
+    # ── Posledný beh ──────────────────────────────────────────────────────────
     try:
-        ws_current = spreadsheet.worksheet("Posledný beh")
+        ws_current = spreadsheet.worksheet(tab_current)
         ws_current.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws_current = spreadsheet.add_worksheet("Posledný beh", rows=50, cols=15)
+        ws_current = spreadsheet.add_worksheet(tab_current, rows=50, cols=20)
 
-    headers = ["Produkt", "Artikl č.", "Cena"] + [STORE_SHORT.get(s, s) for s in all_stores]
+    headers = ["Produkt", "Artikl č.", "Cena"] + [store_short_name(s) for s in all_stores]
     rows = [headers]
     for prod in products:
-        row = [
-            prod["name"],
-            prod["artikel_nr"],
-            prod["price"],
-        ]
+        row = [prod["name"], prod["artikel_nr"], prod["price"]]
         for store in all_stores:
             val = prod["stores"].get(store, "–")
             row.append(val if val != "?" else "–")
         rows.append(row)
 
     ws_current.update(rows, value_input_option="USER_ENTERED")
-    print(f"  'Posledný beh' zapísaný ({len(products)} produktov)")
+    print(f"  '{tab_current}' → {len(products)} produktov")
 
-    # ── Sheet: História ───────────────────────────────────────────────────
-    # Formát: každý riadok = produkt+predajňa, každý stĺpec = dátum behu
-    # To umožňuje jednoduché porovnanie a grafy
-
+    # ── História ───────────────────────────────────────────────────────────────
     try:
-        ws_hist = spreadsheet.worksheet("História")
+        ws_hist = spreadsheet.worksheet(tab_hist)
         existing = ws_hist.get_all_values()
     except gspread.exceptions.WorksheetNotFound:
-        ws_hist = spreadsheet.add_worksheet("História", rows=100, cols=60)
+        ws_hist = spreadsheet.add_worksheet(tab_hist, rows=100, cols=60)
         existing = []
 
-    # Zostav row keys: "artikl_nr|store_canonical"
-    row_keys = []
-    for prod in products:
-        for store in all_stores:
-            row_keys.append({
-                "key": f"{prod['artikel_nr']}|{store}",
-                "name": prod["name"],
-                "artikl": prod["artikel_nr"],
-                "store": STORE_SHORT.get(store, store),
-                "stock": prod["stores"].get(store, "–"),
-            })
+    row_keys = [
+        {
+            "key": f"{prod['artikel_nr']}|{store}",
+            "name": prod["name"],
+            "artikl": prod["artikel_nr"],
+            "store": store_short_name(store),
+            "stock": prod["stores"].get(store, "–"),
+        }
+        for prod in products
+        for store in all_stores
+    ]
 
     if not existing or len(existing) < 2:
-        # Prvý beh — vytvor celý sheet
-        header_row = ["Produkt", "Artikl č.", "Predajňa", "Kľúč", date_col_header]
-        data_rows = [header_row]
+        data_rows = [["Produkt", "Artikl č.", "Predajňa", "Kľúč", date_col_header]]
         for rk in row_keys:
             val = rk["stock"]
             data_rows.append([rk["name"], rk["artikl"], rk["store"], rk["key"],
-                              val if val != "?" else "–"])
+                               val if val != "?" else "–"])
         ws_hist.update(data_rows, value_input_option="USER_ENTERED")
-        print(f"  'História' inicializovaná ({len(row_keys)} riadkov)")
+        print(f"  '{tab_hist}' → inicializovaná ({len(row_keys)} riadkov)")
     else:
-        # Existujúce dáta — pridaj nový stĺpec
         header_row = existing[0]
-
-        # Skontroluj či dnes už bežal (rovnaký dátum)
         if date_col_header in header_row:
             col_idx = header_row.index(date_col_header)
-            print(f"  'História' — dátum {date_col_header} už existuje, prepisujem stĺpec {col_idx+1}")
+            print(f"  '{tab_hist}' → prepisujem stĺpec {col_idx+1} ({date_col_header})")
         else:
             col_idx = len(header_row)
-            # Pridaj hlavičku nového stĺpca
             ws_hist.update_cell(1, col_idx + 1, date_col_header)
-            print(f"  'História' — pridávam nový stĺpec {col_idx+1}: {date_col_header}")
+            print(f"  '{tab_hist}' → nový stĺpec {col_idx+1}: {date_col_header}")
 
-        # Mapa existujúcich kľúčov na riadky
-        key_col = 3  # stĺpec D (0-indexed: 3)
-        existing_keys = {}
-        for row_idx, row in enumerate(existing[1:], start=2):
-            if len(row) > key_col:
-                existing_keys[row[key_col]] = row_idx
+        existing_keys = {
+            row[3]: row_idx
+            for row_idx, row in enumerate(existing[1:], start=2)
+            if len(row) > 3
+        }
 
-        # Zapíš hodnoty
         cells_to_update = []
         new_rows = []
         for rk in row_keys:
             val = rk["stock"] if rk["stock"] != "?" else "–"
             if rk["key"] in existing_keys:
-                row_num = existing_keys[rk["key"]]
-                cells_to_update.append(gspread.Cell(row_num, col_idx + 1, val))
+                cells_to_update.append(gspread.Cell(existing_keys[rk["key"]], col_idx + 1, val))
             else:
-                # Nový produkt/predajňa — pridaj riadok
                 new_row = [rk["name"], rk["artikl"], rk["store"], rk["key"]]
-                # Doplň prázdne stĺpce pre predchádzajúce dátumy
                 while len(new_row) < col_idx:
                     new_row.append("–")
                 new_row.append(val)
@@ -525,45 +555,43 @@ def write_to_sheets(products: list):
 
         if cells_to_update:
             ws_hist.update_cells(cells_to_update, value_input_option="USER_ENTERED")
-
         if new_rows:
             next_row = len(existing) + 1
             for nr in new_rows:
                 ws_hist.update(f"A{next_row}", [nr], value_input_option="USER_ENTERED")
                 next_row += 1
 
-        print(f"  'História' aktualizovaná ({len(cells_to_update)} updated, {len(new_rows)} new)")
+        print(f"  '{tab_hist}' → {len(cells_to_update)} updated, {len(new_rows)} new")
 
-    # ── Sheet: Rozdiel ────────────────────────────────────────────────────
-    # Porovná posledné 2 behy, zapíše rozdiel (záporné = predané)
+    # ── Rozdiel ────────────────────────────────────────────────────────────────
     try:
         ws_hist_data = ws_hist.get_all_values()
     except Exception:
         ws_hist_data = []
 
-    if ws_hist_data and len(ws_hist_data[0]) >= 6:  # Aspoň 2 dátumové stĺpce (4 fixné + 2)
+    if ws_hist_data and len(ws_hist_data[0]) >= 6:
         try:
-            ws_diff = spreadsheet.worksheet("Rozdiel")
+            ws_diff = spreadsheet.worksheet(tab_diff)
             ws_diff.clear()
         except gspread.exceptions.WorksheetNotFound:
-            ws_diff = spreadsheet.add_worksheet("Rozdiel", rows=100, cols=15)
+            ws_diff = spreadsheet.add_worksheet(tab_diff, rows=100, cols=15)
 
         header = ws_hist_data[0]
         last_col = len(header) - 1
         prev_col = last_col - 1
 
-        # Len ak obe sú dátumové stĺpce (index >= 4)
         if prev_col >= 4:
-            diff_header = ["Produkt", "Predajňa",
-                           f"Stav {header[prev_col]}", f"Stav {header[last_col]}",
-                           "Rozdiel", "Poznámka"]
-            diff_rows = [diff_header]
+            diff_rows = [[
+                "Produkt", "Predajňa",
+                f"Stav {header[prev_col]}", f"Stav {header[last_col]}",
+                "Rozdiel", "Poznámka",
+            ]]
 
             for row in ws_hist_data[1:]:
-                name = row[0] if len(row) > 0 else ""
-                store = row[2] if len(row) > 2 else ""
-                prev_val = row[prev_col] if len(row) > prev_col else "–"
-                curr_val = row[last_col] if len(row) > last_col else "–"
+                name      = row[0] if len(row) > 0 else ""
+                store     = row[2] if len(row) > 2 else ""
+                prev_val  = row[prev_col] if len(row) > prev_col else "–"
+                curr_val  = row[last_col] if len(row) > last_col else "–"
 
                 try:
                     prev_n = int(str(prev_val).replace(" ", "").replace("–", ""))
@@ -576,35 +604,59 @@ def write_to_sheets(products: list):
 
                 if prev_n is not None and curr_n is not None:
                     diff = curr_n - prev_n
-                    if diff < 0:
-                        note = f"Predaných ~{abs(diff)} ks"
-                    elif diff > 0:
-                        note = f"Naskladnených {diff} ks"
-                    else:
-                        note = "Bez zmeny"
+                    note = (
+                        f"Predaných ~{abs(diff)} ks" if diff < 0 else
+                        f"Naskladnených {diff} ks" if diff > 0 else
+                        "Bez zmeny"
+                    )
                 else:
-                    diff = "–"
-                    note = "Nedostatok dát"
+                    diff, note = "–", "Nedostatok dát"
 
                 diff_rows.append([name, store, prev_val, curr_val, diff, note])
 
             ws_diff.update(diff_rows, value_input_option="USER_ENTERED")
-            print(f"  'Rozdiel' zapísaný ({len(diff_rows)-1} riadkov)")
+            print(f"  '{tab_diff}' → {len(diff_rows)-1} riadkov")
         else:
-            print("  'Rozdiel' — ešte nemám 2 behy na porovnanie")
+            print(f"  '{tab_diff}' → ešte nemám 2 behy na porovnanie")
     else:
-        print("  'Rozdiel' — ešte nemám dosť dát")
+        print(f"  '{tab_diff}' → ešte nemám dosť dát")
 
-    print(f"\nGoogle Sheets aktualizovaný: {now_str}")
+    print(f"  Google Sheets aktualizovaný: {now_str}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
 async def main():
-    products = await scrape()
-    if products:
-        write_to_sheets(products)
-    else:
-        print("Žiadne produkty, sheets sa neaktualizujú.")
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        print("CHYBA: GOOGLE_SHEET_ID env nie je nastavený")
+        sys.exit(1)
+
+    gc = get_sheets_client()
+    spreadsheet = gc.open_by_key(sheet_id)
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        any_products = False
+
+        for config in COUNTRY_CONFIGS:
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 900},
+                locale=config["locale"],
+            )
+            try:
+                products = await scrape_country(context, config)
+                if products:
+                    write_to_sheets(products, spreadsheet, tab_prefix=config["tab_prefix"])
+                    any_products = True
+                else:
+                    print(f"  {config['key']}: Žiadne produkty, sheets sa neaktualizujú.")
+            finally:
+                await context.close()
+
+        await browser.close()
+
+    if not any_products:
         sys.exit(1)
 
 
