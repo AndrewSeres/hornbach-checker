@@ -136,10 +136,17 @@ def canonicalize_store(raw_name: str) -> str | None:
         "etky predajne", "vsetky predajne",
         "vsechny prodejny", "alle filialen", "alle markte", "alle märkte",
         "vyhledat prodejnu", "markt suchen", "markt wechseln",
+        "ihr baumarkt", "baumarkt", "bau- und garten",
+        "hornbach.at", "hornbach.sk", "hornbach.cz", "hornbach.de",
     ]
     if any(f in raw_lower for f in skip_fragments):
         return None
     if "hornbach" not in raw_lower:
+        return None
+    # Require at least 3 characters after "hornbach" — filters bare "HORNBACH",
+    # country codes like "HORNBACH AT/DE/SK/CZ", etc.
+    after = raw_lower.replace("hornbach", "", 1).strip().lstrip("-").strip()
+    if len(after) < 3:
         return None
     # Take up to first comma, strip trailing punctuation
     base = raw_name.split(",")[0].strip().rstrip(".")
