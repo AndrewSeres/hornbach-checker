@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from datetime import datetime
 
 try:
@@ -52,7 +53,7 @@ STORE_SHORT = {
 
 def matches_keywords(text: str) -> bool:
     t = text.lower()
-    t_plain = t.encode("ascii", "ignore").decode("ascii")
+    t_plain = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
     if not any(k in t or k in t_plain for k in KEYWORDS):
         return False
     if any(k in t or k in t_plain for k in EXCLUDE_KEYWORDS):

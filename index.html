@@ -266,6 +266,16 @@ tbody tr:hover { background: var(--surface2); }
 }
 .tip-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
 
+/* ── Y-axis toggle buttons ── */
+.y-axis-btn {
+  background: var(--surface2); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 14px; font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: inherit; transition: all 0.2s;
+}
+.y-axis-btn:hover { border-color: var(--border-bright); color: var(--text); }
+.y-axis-btn.active { background: var(--orange); color: #fff; border-color: var(--orange); }
+
 /* ── Footer ── */
 .footer {
   position: relative; z-index: 1;
@@ -344,6 +354,7 @@ const PRODUCT_COLORS = ['#F4600C','#58a6ff','#bc8cff','#3fb950','#d29922','#f851
 let DATA = { products:[], stores:[], historyRuns:[], historyMatrix:{} };
 let selectedProduct = 0;
 let barChart = null, lineChart = null;
+let yAxisMode = 'zero';
 
 function storeColor(s) {
   const l = s.toLowerCase();
@@ -500,7 +511,7 @@ function renderCurrent() {
 
   html+=`<div class="chart-box">
     <div class="chart-header"><div><div class="chart-title">Prehľad zásob</div><div class="chart-subtitle">Rozdelenie podľa predajní a produktov</div></div></div>
-    <canvas id="barChart" height="300"></canvas></div>`;
+    <div style="height:320px"><canvas id="barChart"></canvas></div></div>`;
 
   document.getElementById('tab-current').innerHTML=html;
 
@@ -599,8 +610,16 @@ function renderChart() {
   html+='</div>';
 
   html+=`<div class="chart-box">
-    <div class="chart-header"><div><div class="chart-title" id="chart-prod-name">${products[selectedProduct]?.name||''}</div>
-    <div class="chart-subtitle">Vývoj zásob v čase · ${historyRuns.length} ${historyRuns.length===1?'beh':'behov'}</div></div></div>`;
+    <div class="chart-header">
+      <div>
+        <div class="chart-title" id="chart-prod-name">${products[selectedProduct]?.name||''}</div>
+        <div class="chart-subtitle">Vývoj zásob v čase · ${historyRuns.length} ${historyRuns.length===1?'beh':'behov'}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="y-axis-btn${yAxisMode==='zero'?' active':''}" onclick="setYMode('zero',this)">Od nuly</button>
+        <button class="y-axis-btn${yAxisMode==='auto'?' active':''}" onclick="setYMode('auto',this)">Priblížiť zmeny</button>
+      </div>
+    </div>`;
 
   if(historyRuns.length<2){
     html+=`<div class="center-msg" style="padding:50px"><div style="font-size:40px;margin-bottom:12px">📈</div>
@@ -618,6 +637,13 @@ function selectProduct(i) {
   selectedProduct=i;
   renderChart();
   document.getElementById('tab-chart').style.display='block';
+}
+
+function setYMode(mode, btn) {
+  yAxisMode=mode;
+  document.querySelectorAll('.y-axis-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  updateLineChart();
 }
 
 function updateLineChart() {
@@ -672,7 +698,7 @@ function updateLineChart() {
       },
       scales:{
         x:{ ticks:{ color:'#484f58', font:{size:11,weight:600} }, grid:{ color:'#21262d', drawBorder:false } },
-        y:{ ticks:{ color:'#484f58', font:{size:11} }, grid:{ color:'#21262d55', drawBorder:false }, beginAtZero:true }
+        y:{ ticks:{ color:'#484f58', font:{size:11} }, grid:{ color:'#21262d55', drawBorder:false }, beginAtZero: yAxisMode==='zero' }
       }
     }
   });

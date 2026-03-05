@@ -10,6 +10,7 @@ Spustenie: python hornbach_checker.py
 import asyncio
 import re
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -52,7 +53,7 @@ CANONICAL_STORES = [
 
 def matches_keywords(text: str) -> bool:
     t = text.lower()
-    t_plain = t.encode("ascii", "ignore").decode("ascii")
+    t_plain = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii")
     # Must match at least one keyword
     if not any(k in t or k in t_plain for k in KEYWORDS):
         return False
