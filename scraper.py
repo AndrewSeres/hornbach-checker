@@ -267,95 +267,80 @@ async def scrape_country(context, config: dict) -> list:
 
         pp = None
         try:
-            pp = await context.new_page()
-            await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
-            await pp.wait_for_timeout(2000)
+            async with asyncio.timeout(120):
+                pp = await context.new_page()
+                await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
+                await pp.wait_for_timeout(2000)
 
-            # Price
-            for price_sel in [
-                "[data-testid='article-price'] [class*='value']",
-                "[class*='article-price'] [class*='value']",
-                "[class*='ArticlePrice'] [class*='value']",
-                "[class*='price-value']",
-                "[class*='Price'] strong",
-                "[class*='price'] strong",
-                "strong[class*='price']",
-            ]:
-                try:
-                    el = pp.locator(price_sel).first
-                    if await el.is_visible(timeout=800):
-                        prod_data["price"] = (await el.inner_text()).strip()
-                        break
-                except Exception:
-                    pass
-
-            if not prod_data["price"]:
-                try:
-                    body_text = await pp.inner_text("body")
-                    pm = re.search(config["currency_re"], body_text)
-                    if pm:
-                        prod_data["price"] = pm.group(0).strip()
-                except Exception:
-                    pass
-
-            # Expand EAN section
-            for expand_text in EAN_EXPAND_TEXTS:
-                try:
-                    btn = pp.get_by_text(expand_text, exact=False).first
-                    if await btn.is_visible(timeout=800):
-                        await btn.click()
-                        await pp.wait_for_timeout(700)
-                        break
-                except Exception:
-                    pass
-
-            # EAN from table
-            try:
-                rows = await pp.query_selector_all("tr")
-                for row in rows:
-                    row_text = await row.inner_text()
-                    if "EAN" in row_text:
-                        cells = await row.query_selector_all("td")
-                        if len(cells) >= 2:
-                            prod_data["ean"] = (await cells[-1].inner_text()).strip()
-                        if prod_data["ean"]:
-                            break
-            except Exception:
-                pass
-
-            if not prod_data["ean"]:
-                try:
-                    body = await pp.inner_text("body")
-                    em = re.search(r'EAN\s*\n?\s*([0-9]{8,}(?:[,\s]+[0-9]{8,})*)', body)
-                    if em:
-                        prod_data["ean"] = em.group(1).strip()
-                except Exception:
-                    pass
-
-            print(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
-
-            # Click availability button
-            clicked = False
-            for avail_text in AVAIL_TEXTS:
-                try:
-                    btn = pp.get_by_text(avail_text, exact=False).first
-                    if await btn.is_visible(timeout=1500):
-                        await btn.click()
-                        await pp.wait_for_timeout(5000)
-                        clicked = True
-                        break
-                except Exception:
-                    pass
-
-            if not clicked:
-                for btn_sel in [
-                    "[class*='StoreAvailability'] button",
-                    "[class*='store-availability'] button",
-                    "button[class*='store']",
+                # Price
+                for price_sel in [
+                    "[data-testid='article-price'] [class*='value']",
+                    "[class*='article-price'] [class*='value']",
+                    "[class*='ArticlePrice'] [class*='value']",
+                    "[class*='price-value']",
+                    "[class*='Price'] strong",
+                    "[class*='price'] strong",
+                    "strong[class*='price']",
                 ]:
                     try:
-                        btn = pp.locator(btn_sel).first
+                        el = pp.locator(price_sel).first
+                        if await el.is_visible(timeout=800):
+                            prod_data["price"] = (await el.inner_text()).strip()
+                            break
+                    except Exception:
+                        pass
+
+                if not prod_data["price"]:
+                    try:
+                        body_text = await pp.inner_text("body")
+                        pm = re.search(config["currency_re"], body_text)
+                        if pm:
+                            prod_data["price"] = pm.group(0).strip()
+                    except Exception:
+                        pass
+
+                # Expand EAN section
+                for expand_text in EAN_EXPAND_TEXTS:
+                    try:
+                        btn = pp.get_by_text(expand_text, exact=False).first
                         if await btn.is_visible(timeout=800):
+                            await btn.click()
+                            await pp.wait_for_timeout(700)
+                            break
+                    except Exception:
+                        pass
+
+                # EAN from table
+                try:
+                    rows = await pp.query_selector_all("tr")
+                    for row in rows:
+                        row_text = await row.inner_text()
+                        if "EAN" in row_text:
+                            cells = await row.query_selector_all("td")
+                            if len(cells) >= 2:
+                                prod_data["ean"] = (await cells[-1].inner_text()).strip()
+                            if prod_data["ean"]:
+                                break
+                except Exception:
+                    pass
+
+                if not prod_data["ean"]:
+                    try:
+                        body = await pp.inner_text("body")
+                        em = re.search(r'EAN\s*\n?\s*([0-9]{8,}(?:[,\s]+[0-9]{8,})*)', body)
+                        if em:
+                            prod_data["ean"] = em.group(1).strip()
+                    except Exception:
+                        pass
+
+                print(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
+
+                # Click availability button
+                clicked = False
+                for avail_text in AVAIL_TEXTS:
+                    try:
+                        btn = pp.get_by_text(avail_text, exact=False).first
+                        if await btn.is_visible(timeout=1500):
                             await btn.click()
                             await pp.wait_for_timeout(5000)
                             clicked = True
@@ -363,103 +348,121 @@ async def scrape_country(context, config: dict) -> list:
                     except Exception:
                         pass
 
-            # Try to expand "all stores" if a secondary button appeared (short timeout — skip fast if absent)
-            if clicked:
-                for alle_txt in [
-                    "Alle Märkte", "Alle Filialen", "alle Märkte",
-                    "Alle predajne", "Všetky predajne", "Všechny prodejny",
+                if not clicked:
+                    for btn_sel in [
+                        "[class*='StoreAvailability'] button",
+                        "[class*='store-availability'] button",
+                        "button[class*='store']",
+                    ]:
+                        try:
+                            btn = pp.locator(btn_sel).first
+                            if await btn.is_visible(timeout=800):
+                                await btn.click()
+                                await pp.wait_for_timeout(5000)
+                                clicked = True
+                                break
+                        except Exception:
+                            pass
+
+                # Try to expand "all stores" if a secondary button appeared (short timeout — skip fast if absent)
+                if clicked:
+                    for alle_txt in [
+                        "Alle Märkte", "Alle Filialen", "alle Märkte",
+                        "Alle predajne", "Všetky predajne", "Všechny prodejny",
+                    ]:
+                        try:
+                            b2 = pp.get_by_text(alle_txt, exact=False).first
+                            if await b2.is_visible(timeout=400):
+                                await b2.click()
+                                await pp.wait_for_timeout(2000)
+                                break
+                        except Exception:
+                            pass
+
+                # Read modal text — try specific containers first, fall back to full body
+                modal_text = ""
+                for modal_sel in [
+                    "[role='dialog']",
+                    "[class*='Modal']", "[class*='modal']",
+                    "[class*='Overlay']", "[class*='overlay']",
+                    "[class*='Drawer']", "[class*='drawer']",
+                    "[class*='Sheet']", "[class*='Slide']",
                 ]:
                     try:
-                        b2 = pp.get_by_text(alle_txt, exact=False).first
-                        if await b2.is_visible(timeout=400):
-                            await b2.click()
-                            await pp.wait_for_timeout(2000)
-                            break
+                        modal = pp.locator(modal_sel).first
+                        if await modal.is_visible(timeout=600):
+                            t = await modal.inner_text()
+                            if "HORNBACH" in t:
+                                modal_text = t
+                                break
                     except Exception:
                         pass
 
-            # Read modal text — try specific containers first, fall back to full body
-            modal_text = ""
-            for modal_sel in [
-                "[role='dialog']",
-                "[class*='Modal']", "[class*='modal']",
-                "[class*='Overlay']", "[class*='overlay']",
-                "[class*='Drawer']", "[class*='drawer']",
-                "[class*='Sheet']", "[class*='Slide']",
-            ]:
-                try:
-                    modal = pp.locator(modal_sel).first
-                    if await modal.is_visible(timeout=600):
-                        t = await modal.inner_text()
-                        if "HORNBACH" in t:
-                            modal_text = t
-                            break
-                except Exception:
-                    pass
+                if not modal_text or "HORNBACH" not in modal_text:
+                    try:
+                        modal_text = await pp.inner_text("body")
+                    except Exception:
+                        pass
 
-            if not modal_text or "HORNBACH" not in modal_text:
-                try:
-                    modal_text = await pp.inner_text("body")
-                except Exception:
-                    pass
-
-            # Parse stores from modal
-            if modal_text and "HORNBACH" in modal_text:
-                lines = [l.strip() for l in modal_text.splitlines() if l.strip()]
-                found_stores: dict[str, int | str] = {}
-                i = 0
-                while i < len(lines):
-                    line = lines[i]
-                    if "HORNBACH" in line:
-                        canonical = canonicalize_store(line)
-                        if canonical is not None:
-                            stock_val = None
-                            for j in range(i + 1, min(i + 30, len(lines))):
-                                jline = lines[j]
-                                # Only break on an actual next store name, not any HORNBACH mention
-                                if canonicalize_store(jline) is not None:
-                                    break
-                                # "123 balení / Stück / ks"
-                                sm = STOCK_RE.search(jline)
-                                if sm:
-                                    stock_val = int(sm.group(1).replace(" ", ""))
-                                    break
-                                # Bare number with contextual confirmation
-                                if re.match(r'^\d+$', jline):
-                                    nearby = " ".join(lines[max(0, j-2):min(len(lines), j+3)]).lower()
-                                    if any(w in nearby for w in [
-                                        "dostupn", "skladom", "dispoz", "baleni", "balení",
-                                        "verfügb", "lager", "vorrätig", "k dispozici",
-                                        "im markt", "abholber",
-                                    ]):
-                                        stock_val = int(jline)
+                # Parse stores from modal
+                if modal_text and "HORNBACH" in modal_text:
+                    lines = [l.strip() for l in modal_text.splitlines() if l.strip()]
+                    found_stores: dict[str, int | str] = {}
+                    i = 0
+                    while i < len(lines):
+                        line = lines[i]
+                        if "HORNBACH" in line:
+                            canonical = canonicalize_store(line)
+                            if canonical is not None:
+                                stock_val = None
+                                for j in range(i + 1, min(i + 30, len(lines))):
+                                    jline = lines[j]
+                                    # Only break on an actual next store name, not any HORNBACH mention
+                                    if canonicalize_store(jline) is not None:
                                         break
-                                # Out-of-stock phrase
-                                if OOS_RE.search(jline):
-                                    stock_val = 0
-                                    break
-                                # "Dostupné > 50" / "verfügbar: 12"
-                                sm2 = STOCK_LABEL_RE.search(jline)
-                                if sm2:
-                                    stock_val = int(sm2.group(1) or sm2.group(2))
-                                    break
+                                    # "123 balení / Stück / ks"
+                                    sm = STOCK_RE.search(jline)
+                                    if sm:
+                                        stock_val = int(sm.group(1).replace(" ", ""))
+                                        break
+                                    # Bare number with contextual confirmation
+                                    if re.match(r'^\d+$', jline):
+                                        nearby = " ".join(lines[max(0, j-2):min(len(lines), j+3)]).lower()
+                                        if any(w in nearby for w in [
+                                            "dostupn", "skladom", "dispoz", "baleni", "balení",
+                                            "verfügb", "lager", "vorrätig", "k dispozici",
+                                            "im markt", "abholber",
+                                        ]):
+                                            stock_val = int(jline)
+                                            break
+                                    # Out-of-stock phrase
+                                    if OOS_RE.search(jline):
+                                        stock_val = 0
+                                        break
+                                    # "Dostupné > 50" / "verfügbar: 12"
+                                    sm2 = STOCK_LABEL_RE.search(jline)
+                                    if sm2:
+                                        stock_val = int(sm2.group(1) or sm2.group(2))
+                                        break
 
-                            if canonical in found_stores:
-                                if found_stores[canonical] == "?" and stock_val is not None:
-                                    found_stores[canonical] = stock_val
-                                    print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
-                            else:
-                                found_stores[canonical] = stock_val if stock_val is not None else "?"
-                                if stock_val is not None:
-                                    print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
-                    i += 1
+                                if canonical in found_stores:
+                                    if found_stores[canonical] == "?" and stock_val is not None:
+                                        found_stores[canonical] = stock_val
+                                        print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                                else:
+                                    found_stores[canonical] = stock_val if stock_val is not None else "?"
+                                    if stock_val is not None:
+                                        print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                        i += 1
 
-                # Print any stores still at "?" (no stock data found)
-                for s, v in found_stores.items():
-                    if v == "?":
-                        print(f"  {store_short_name(s)}: –")
-                prod_data["stores"] = found_stores
+                    # Print any stores still at "?" (no stock data found)
+                    for s, v in found_stores.items():
+                        if v == "?":
+                            print(f"  {store_short_name(s)}: –")
+                    prod_data["stores"] = found_stores
 
+        except TimeoutError:
+            print(f"  Timeout (120s) — preskoceny")
         except Exception as e:
             print(f"  Chyba: {e}")
         finally:
@@ -604,7 +607,7 @@ def write_to_sheets(products: list, spreadsheet, tab_prefix: str = ""):
         if new_rows:
             next_row = len(existing) + 1
             for nr in new_rows:
-                ws_hist.update(f"A{next_row}", [nr], value_input_option="USER_ENTERED")
+                ws_hist.update([nr], f"A{next_row}", value_input_option="USER_ENTERED")
                 next_row += 1
 
         print(f"  '{tab_hist}' → {len(cells_to_update)} updated, {len(new_rows)} new")
