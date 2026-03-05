@@ -331,7 +331,7 @@ async def scrape_country(context, config: dict) -> list:
                     btn = pp.get_by_text(avail_text, exact=False).first
                     if await btn.is_visible(timeout=1500):
                         await btn.click()
-                        await pp.wait_for_timeout(3000)
+                        await pp.wait_for_timeout(5000)
                         clicked = True
                         break
                 except Exception:
@@ -347,15 +347,36 @@ async def scrape_country(context, config: dict) -> list:
                         btn = pp.locator(btn_sel).first
                         if await btn.is_visible(timeout=800):
                             await btn.click()
-                            await pp.wait_for_timeout(3000)
+                            await pp.wait_for_timeout(5000)
                             clicked = True
                             break
                     except Exception:
                         pass
 
-            # Read modal text
+            # Try to expand "all stores" if a secondary button appeared
+            if clicked:
+                for alle_txt in [
+                    "Alle Märkte", "Alle Filialen", "alle Märkte",
+                    "Alle predajne", "Všetky predajne", "Všechny prodejny",
+                ]:
+                    try:
+                        b2 = pp.get_by_text(alle_txt, exact=False).first
+                        if await b2.is_visible(timeout=2000):
+                            await b2.click()
+                            await pp.wait_for_timeout(3000)
+                            break
+                    except Exception:
+                        pass
+
+            # Read modal text — try specific containers first, fall back to full body
             modal_text = ""
-            for modal_sel in ["[role='dialog']", "[class*='Modal']", "[class*='modal']", "[class*='Overlay']"]:
+            for modal_sel in [
+                "[role='dialog']",
+                "[class*='Modal']", "[class*='modal']",
+                "[class*='Overlay']", "[class*='overlay']",
+                "[class*='Drawer']", "[class*='drawer']",
+                "[class*='Sheet']", "[class*='Slide']",
+            ]:
                 try:
                     modal = pp.locator(modal_sel).first
                     if await modal.is_visible(timeout=2000):
@@ -383,9 +404,10 @@ async def scrape_country(context, config: dict) -> list:
                         canonical = canonicalize_store(line)
                         if canonical is not None:
                             stock_val = None
-                            for j in range(i + 1, min(i + 15, len(lines))):
+                            for j in range(i + 1, min(i + 30, len(lines))):
                                 jline = lines[j]
-                                if "HORNBACH" in jline and j > i:
+                                # Only break on an actual next store name, not any HORNBACH mention
+                                if canonicalize_store(jline) is not None:
                                     break
                                 # "123 balení / Stück / ks"
                                 sm = STOCK_RE.search(jline)
@@ -398,6 +420,7 @@ async def scrape_country(context, config: dict) -> list:
                                     if any(w in nearby for w in [
                                         "dostupn", "skladom", "dispoz", "baleni", "balení",
                                         "verfügb", "lager", "vorrätig", "k dispozici",
+                                        "im markt", "abholber",
                                     ]):
                                         stock_val = int(jline)
                                         break
