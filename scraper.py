@@ -132,14 +132,17 @@ def matches_keywords(text: str, keywords: list, exclude_keywords: list) -> bool:
 def canonicalize_store(raw_name: str) -> str | None:
     """Clean store name from modal line. Returns None for non-store lines."""
     raw_lower = raw_name.lower().strip()
+    # Normalize diacritics for skip check so "všechny" matches "vsechny" etc.
+    raw_plain = unicodedata.normalize("NFKD", raw_lower).encode("ascii", "ignore").decode("ascii")
     skip_fragments = [
         "etky predajne", "vsetky predajne",
-        "vsechny prodejny", "alle filialen", "alle markte", "alle märkte",
+        "vsechny prodejny", "alle filialen", "alle markte", "alle markte",
         "vyhledat prodejnu", "markt suchen", "markt wechseln",
         "ihr baumarkt", "baumarkt", "bau- und garten",
         "hornbach.at", "hornbach.sk", "hornbach.cz", "hornbach.de",
+        "v ceske republice", "in osterreich", "in deutschland",
     ]
-    if any(f in raw_lower for f in skip_fragments):
+    if any(f in raw_plain for f in skip_fragments):
         return None
     if "hornbach" not in raw_lower:
         return None
@@ -444,11 +447,17 @@ async def scrape_country(context, config: dict) -> list:
                             if canonical in found_stores:
                                 if found_stores[canonical] == "?" and stock_val is not None:
                                     found_stores[canonical] = stock_val
+                                    print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
                             else:
                                 found_stores[canonical] = stock_val if stock_val is not None else "?"
-
-                            print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                                if stock_val is not None:
+                                    print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
                     i += 1
+
+                # Print any stores still at "?" (no stock data found)
+                for s, v in found_stores.items():
+                    if v == "?":
+                        print(f"  {store_short_name(s)}: –")
                 prod_data["stores"] = found_stores
 
         except Exception as e:
