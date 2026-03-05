@@ -103,12 +103,12 @@ OOS_RE = re.compile(
     r'vypredané|vypredane|0 balení|0 balenie|'
     r'není k dispozici|není skladem|momentálně není|'
     r'nicht verfügbar|ausverkauft|momentan nicht|nicht auf Lager|'
-    r'0 Stück|0 St\.',
+    r'0 Stück|0 St\.|0 ST\b',
     re.IGNORECASE
 )
 
 STOCK_RE = re.compile(
-    r'(\d[\d\s]*)\s*(balen[ií]e?|ks\b|kus|Stück\b|Stk\b|St\.)',
+    r'(\d[\d\s]*)\s*(balen[ií]e?|ks\b|kus|Stück\b|Stk\b|St\.|ST\b)',
     re.IGNORECASE
 )
 
@@ -284,7 +284,7 @@ async def scrape_country(context, config: dict) -> list:
                     body_text = await pp.inner_text("body")
                     pm = re.search(config["currency_re"], body_text)
                     if pm:
-                        prod_data["price"] = f"{pm.group(1)} €"
+                        prod_data["price"] = pm.group(0).strip()
                 except Exception:
                     pass
 
