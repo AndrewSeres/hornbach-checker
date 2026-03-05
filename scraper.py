@@ -360,7 +360,7 @@ async def scrape_country(context, config: dict) -> list:
                     except Exception:
                         pass
 
-            # Try to expand "all stores" if a secondary button appeared
+            # Try to expand "all stores" if a secondary button appeared (short timeout — skip fast if absent)
             if clicked:
                 for alle_txt in [
                     "Alle Märkte", "Alle Filialen", "alle Märkte",
@@ -368,9 +368,9 @@ async def scrape_country(context, config: dict) -> list:
                 ]:
                     try:
                         b2 = pp.get_by_text(alle_txt, exact=False).first
-                        if await b2.is_visible(timeout=2000):
+                        if await b2.is_visible(timeout=400):
                             await b2.click()
-                            await pp.wait_for_timeout(3000)
+                            await pp.wait_for_timeout(2000)
                             break
                     except Exception:
                         pass
@@ -386,7 +386,7 @@ async def scrape_country(context, config: dict) -> list:
             ]:
                 try:
                     modal = pp.locator(modal_sel).first
-                    if await modal.is_visible(timeout=2000):
+                    if await modal.is_visible(timeout=600):
                         t = await modal.inner_text()
                         if "HORNBACH" in t:
                             modal_text = t
