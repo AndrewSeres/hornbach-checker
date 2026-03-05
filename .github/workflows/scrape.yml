@@ -32,4 +32,5 @@ jobs:
         env:
           GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_SHEETS_CREDS }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: python scraper.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u scraper.py

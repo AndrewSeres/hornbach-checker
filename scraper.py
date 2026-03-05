@@ -175,7 +175,8 @@ async def scrape_country(context, config: dict) -> list:
     print(f"{'='*60}")
 
     page = await context.new_page()
-    await page.goto(config["category_url"], wait_until="networkidle", timeout=60000)
+    await page.goto(config["category_url"], wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(3000)  # let JS settle
 
     # Dismiss cookie banner
     for sel in COOKIE_SELECTORS:
@@ -711,4 +712,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(line_buffering=True)
     asyncio.run(main())
