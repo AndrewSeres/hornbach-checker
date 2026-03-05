@@ -82,7 +82,9 @@ AVAIL_TEXTS = [
     "ZKONTROLOVAT DOSTUPNOST", "Zkontrolovat dostupnost",
     "dostupnost v prodejně", "DOSTUPNOST V PRODEJNĚ",
     # DE/AT
+    "VERFÜGBARKEIT IN DER NÄHE PRÜFEN", "Verfügbarkeit in der Nähe prüfen",
     "VERFÜGBARKEIT PRÜFEN", "Verfügbarkeit prüfen",
+    "IN DER NÄHE PRÜFEN", "In der Nähe prüfen",
     "Im Markt verfügbar", "Markt wechseln",
     "Verfügbarkeit in Märkten",
 ]
