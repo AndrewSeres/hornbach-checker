@@ -165,12 +165,18 @@ body {
 .panel-title { font-size: 14px; font-weight: 700; color: var(--text-dim); }
 
 /* ── Table ── */
+.table-wrap {
+  overflow: auto;
+  max-height: 72vh;
+  -webkit-overflow-scrolling: touch;
+}
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 thead tr { background: var(--surface2); }
+thead { position: sticky; top: 0; z-index: 2; }
 th {
   padding: 12px 12px; font-weight: 700; font-size: 11px;
   color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.2px;
-  white-space: nowrap;
+  white-space: nowrap; background: var(--surface2);
 }
 th:first-child { text-align: left; padding-left: 22px; }
 td { padding: 14px 12px; text-align: center; border-bottom: 1px solid var(--border); }
@@ -347,6 +353,7 @@ tbody tr:hover { background: var(--surface2); }
     <button class="tab active" data-tab="current" onclick="switchTab('current',this)">📊 Aktuálny stav</button>
     <button class="tab" data-tab="diff" onclick="switchTab('diff',this)">🔄 Porovnanie</button>
     <button class="tab" data-tab="chart" onclick="switchTab('chart',this)">📈 Trend</button>
+    <button class="tab" data-tab="tonaz" onclick="switchTab('tonaz',this)">⚖️ Tonáž</button>
   </div>
 </div>
 
@@ -356,6 +363,7 @@ tbody tr:hover { background: var(--surface2); }
   <div id="tab-current" style="display:none"></div>
   <div id="tab-diff" style="display:none"></div>
   <div id="tab-chart" style="display:none"></div>
+  <div id="tab-tonaz" style="display:none"></div>
 </div>
 
 <div class="footer">
@@ -381,11 +389,19 @@ const STORE_COLORS = {
 const PRODUCT_COLORS = ['#F4600C','#58a6ff','#bc8cff','#3fb950','#d29922','#f85149','#39d2c0'];
 
 const CATEGORY_DEFS = [
-  { name: 'Valcové', color: '#F4600C', g: 'linear-gradient(135deg,#F4600C,#d9540b)', keys: ['valcov'] },
-  { name: 'Tehlové', color: '#58a6ff', g: 'linear-gradient(135deg,#58a6ff,#388bfd)', keys: ['tehl', 'hranat'] },
-  { name: 'Pelety',  color: '#3fb950', g: 'linear-gradient(135deg,#3fb950,#2ea043)', keys: ['pelet'] },
-  { name: 'Drevo',   color: '#d29922', g: 'linear-gradient(135deg,#d29922,#bb8009)', keys: ['drevo', 'triesk'] },
+  { name: 'Valcové', color: '#F4600C', g: 'linear-gradient(135deg,#F4600C,#d9540b)', keys: ['valcov', 'brikett'] },
+  { name: 'Tehlové', color: '#58a6ff', g: 'linear-gradient(135deg,#58a6ff,#388bfd)', keys: ['tehl', 'hranat', 'ruf'] },
+  { name: 'Pelety',  color: '#3fb950', g: 'linear-gradient(135deg,#3fb950,#2ea043)', keys: ['pelet', 'pellet'] },
+  { name: 'Drevo',   color: '#d29922', g: 'linear-gradient(135deg,#d29922,#bb8009)', keys: ['drevo', 'triesk', 'brennholz', 'scheit'] },
   { name: 'Iné',     color: '#8b949e', g: 'linear-gradient(135deg,#8b949e,#6e7681)', keys: [] },
+];
+
+// Tonáž view: category → display label + unit
+const TONAZ_CATS = [
+  { catName: 'Valcové', label: 'Valce',   unit: 't'   },
+  { catName: 'Tehlové', label: 'Tehla',   unit: 't'   },
+  { catName: 'Pelety',  label: 'PA1',     unit: 't'   },
+  { catName: 'Drevo',   label: 'DreTri',  unit: 'pal' },
 ];
 
 function stripDia(s) {
@@ -394,8 +410,11 @@ function stripDia(s) {
 
 function getCategory(name) {
   const n = stripDia(name.toLowerCase());
-  for (const cat of CATEGORY_DEFS.slice(0, -1)) {
-    if (cat.keys.some(k => n.includes(stripDia(k)))) return cat;
+  // Check Tehlové before Valcové so "hranaté/RUF" beats generic "brikett" catch-all
+  const matchOrder = ['Tehlové', 'Valcové', 'Pelety', 'Drevo'];
+  for (const catName of matchOrder) {
+    const cat = CATEGORY_DEFS.find(c => c.name === catName);
+    if (cat && cat.keys.some(k => n.includes(stripDia(k)))) return cat;
   }
   return CATEGORY_DEFS[CATEGORY_DEFS.length - 1];
 }
@@ -413,14 +432,27 @@ let selectedProduct = 0;
 let barChart = null, lineChart = null;
 let yAxisMode = 'zero';
 
+// Deterministic color from string — works for any store name in any country
+function hashColor(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  // Map to one of several distinct hues, avoiding reds already used for Valcové category
+  const hues = [210, 155, 280, 45, 190, 320, 90, 25, 240, 170, 60, 300];
+  const hue = hues[Math.abs(h) % hues.length];
+  const c = `hsl(${hue},70%,58%)`;
+  const c2 = `hsl(${hue},70%,46%)`;
+  return { c, g: `linear-gradient(135deg,${c},${c2})` };
+}
+
 function storeColor(s) {
-  const l = s.toLowerCase();
+  // Stable overrides for known SK stores keep their original branded colors
+  const l = stripDia(s.toLowerCase());
   if (l.includes('nitra')) return STORE_COLORS['Nitra'];
-  if (l.includes('ružinov')||l.includes('ruzinov')) return STORE_COLORS['BA Ružinov'];
-  if (l.includes('devín')||l.includes('devin')) return STORE_COLORS['BA Devínska'];
-  if (l.includes('košic')||l.includes('kosic')) return STORE_COLORS['Košice'];
-  if (l.includes('prešov')||l.includes('presov')) return STORE_COLORS['Prešov'];
-  return { c:'#8b949e', g:'linear-gradient(135deg,#8b949e,#6e7681)' };
+  if (l.includes('ruzinov')) return STORE_COLORS['BA Ružinov'];
+  if (l.includes('devin')) return STORE_COLORS['BA Devínska'];
+  if (l.includes('kosic')) return STORE_COLORS['Košice'];
+  if (l.includes('presov')) return STORE_COLORS['Prešov'];
+  return hashColor(s);
 }
 
 function parseCsvRow(line) {
@@ -471,6 +503,7 @@ function diffBadge(prev,curr) {
 }
 
 async function loadData() {
+  tonazDataCache = null; // reset so Tonáž reloads fresh data
   document.getElementById('loading').style.display='block';
   document.getElementById('error').style.display='none';
   ['tab-current','tab-diff','tab-chart'].forEach(id=>document.getElementById(id).style.display='none');
@@ -540,11 +573,12 @@ function switchCountry(country, btn) {
 function switchTab(id,btn) {
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   btn.classList.add('active');
-  ['tab-current','tab-diff','tab-chart'].forEach(t=>document.getElementById(t).style.display='none');
+  ['tab-current','tab-diff','tab-chart','tab-tonaz'].forEach(t=>document.getElementById(t).style.display='none');
   const el = document.getElementById('tab-'+id);
   if(el) el.style.display='block';
   if(id==='chart') setTimeout(()=>updateLineChart(),50);
   if(id==='current' && barChart) setTimeout(()=>barChart.resize(),50);
+  if(id==='tonaz') renderTonaz();
 }
 
 function renderCurrent() {
@@ -590,7 +624,7 @@ function renderCurrent() {
 
   html+=`<div class="panel" style="margin-top:28px">
     <div class="panel-header"><span class="panel-title">Dostupnosť podľa produktu</span><span style="font-size:12px;color:var(--text-muted)">${products.length} produktov</span></div>
-    <div style="overflow-x:auto"><table><thead><tr>
+    <div class="table-wrap"><table><thead><tr>
       <th style="text-align:left;padding-left:22px">Produkt</th><th>Cena</th>`;
   stores.forEach(s=>{const sc=storeColor(s);html+=`<th style="color:${sc.c}">${s}</th>`;});
   html+='<th style="color:var(--text-dim)">Spolu</th></tr></thead><tbody>';
@@ -720,7 +754,7 @@ function renderDiff() {
     html+='</div>';
   }
 
-  html+='<div class="panel"><div style="overflow-x:auto"><table><thead><tr>';
+  html+='<div class="panel"><div class="table-wrap"><table><thead><tr>';
   html+='<th style="text-align:left;padding-left:22px">Produkt</th><th>Predajňa</th><th style="color:var(--text-muted)">Predtým</th><th>Teraz</th><th style="color:var(--orange)">Rozdiel</th>';
   html+='</tr></thead><tbody>';
 
@@ -876,6 +910,206 @@ function updateLineChart() {
       }
     }
   });
+}
+
+// ── Tonáž tab ─────────────────────────────────────────────────────────────────
+
+function extractWeightKg(name) {
+  const m = name.match(/(\d+(?:[,\.]\d+)?)\s*kg/i);
+  if (!m) return null;
+  return parseFloat(m[1].replace(',', '.'));
+}
+
+function parseRunDate(label) {
+  const m = label.match(/(\d+)\.(\d+)\.(\d+)\s+(\d+):(\d+)/);
+  if (!m) return null;
+  return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5]);
+}
+
+function getMonthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
+}
+
+function getMonthLabel(key) {
+  const [y, m] = key.split('-');
+  const names = ['JAN','FEB','MAR','APR','MÁJ','JÚN','JÚL','AUG','SEP','OKT','NOV','DEC'];
+  return `${names[+m-1]}'${y.slice(2)}`;
+}
+
+// Returns { monthKey → { productName → { storeName → sold_packages } } }
+function calcMonthlySold(histData) {
+  const histFixed = ['Produkt', 'Artikl č.', 'Predajňa', 'Kľúč'];
+  if (!histData || !histData.length) return {};
+  const dateCols = Object.keys(histData[0]).filter(k => !histFixed.includes(k) && k.trim());
+  if (!dateCols.length) return {};
+
+  const colMonths = dateCols.map(col => {
+    const d = parseRunDate(col);
+    return d ? getMonthKey(d) : null;
+  });
+  const allMonths = [...new Set(colMonths.filter(Boolean))].sort();
+  const result = {};
+  allMonths.forEach(mk => { result[mk] = {}; });
+
+  histData.forEach(row => {
+    const prod = row['Produkt'] || '';
+    const store = row['Predajňa'] || '';
+    if (!prod || !store) return;
+
+    const vals = dateCols.map(col => {
+      const raw = row[col];
+      if (raw === '–' || raw === '' || raw == null) return null;
+      const n = Number(raw);
+      return isNaN(n) ? null : n;
+    });
+
+    allMonths.forEach(mk => {
+      const monthIdxs = colMonths.map((m, i) => m === mk ? i : -1).filter(i => i >= 0);
+      if (!monthIdxs.length) return;
+
+      // Start: last valid reading before this month, or first reading in month
+      let startVal = null;
+      for (let i = monthIdxs[0] - 1; i >= 0; i--) {
+        if (vals[i] !== null) { startVal = vals[i]; break; }
+      }
+      if (startVal === null) {
+        for (const idx of monthIdxs) {
+          if (vals[idx] !== null) { startVal = vals[idx]; break; }
+        }
+      }
+
+      // End: last valid reading in month
+      let endVal = null;
+      for (let i = monthIdxs.length - 1; i >= 0; i--) {
+        if (vals[monthIdxs[i]] !== null) { endVal = vals[monthIdxs[i]]; break; }
+      }
+
+      if (startVal === null || endVal === null) return;
+      const sold = Math.max(0, startVal - endVal);
+      if (!result[mk][prod]) result[mk][prod] = {};
+      result[mk][prod][store] = (result[mk][prod][store] || 0) + sold;
+    });
+  });
+
+  return result;
+}
+
+let tonazDataCache = null;
+
+async function renderTonaz() {
+  const el = document.getElementById('tab-tonaz');
+  if (tonazDataCache && tonazDataCache._rendered) return; // already rendered
+  el.innerHTML = '<div class="center-msg"><div class="spinner-ring"></div><div style="color:var(--text-dim);font-size:15px;font-weight:600">Načítavam tonážne dáta...</div></div>';
+
+  try {
+    if (!tonazDataCache) {
+      const [histSK, histCZ, histAT] = await Promise.all([
+        fetchSheet('História'),
+        fetchSheet('CZ História'),
+        fetchSheet('AT História'),
+      ]);
+      tonazDataCache = { SK: histSK, CZ: histCZ, AT: histAT };
+    }
+
+    const soldByCountry = {
+      SK: calcMonthlySold(tonazDataCache.SK),
+      CZ: calcMonthlySold(tonazDataCache.CZ),
+      AT: calcMonthlySold(tonazDataCache.AT),
+    };
+
+    // Build product→weight map across all countries
+    const prodWeights = {};
+    ['SK','CZ','AT'].forEach(cc => {
+      (tonazDataCache[cc] || []).forEach(row => {
+        const name = row['Produkt'];
+        if (name && prodWeights[name] === undefined) {
+          prodWeights[name] = extractWeightKg(name);
+        }
+      });
+    });
+
+    const allMonths = [...new Set([
+      ...Object.keys(soldByCountry.SK),
+      ...Object.keys(soldByCountry.CZ),
+      ...Object.keys(soldByCountry.AT),
+    ])].sort().reverse(); // newest first
+
+    const countries = ['SK','CZ','AT'];
+    const countryLabels = { SK: 'Hornbach SK', CZ: 'Hornbach CZ', AT: 'Hornbach AT' };
+
+    function getCatValue(monthSold, catName, unit) {
+      let totalKg = 0, totalPal = 0, hasData = false;
+      Object.entries(monthSold || {}).forEach(([prodName, storeMap]) => {
+        if (getCategory(prodName).name !== catName) return;
+        const packs = Object.values(storeMap).reduce((s, v) => s + v, 0);
+        if (packs > 0) hasData = true;
+        if (unit === 't') {
+          const w = prodWeights[prodName];
+          if (w) totalKg += packs * w;
+        } else {
+          totalPal += packs;
+        }
+      });
+      if (!hasData) return null;
+      return unit === 't' ? totalKg / 1000 : totalPal;
+    }
+
+    if (!allMonths.length) {
+      el.innerHTML = '<div class="center-msg"><div style="font-size:56px;margin-bottom:16px">📊</div><div style="font-size:15px;font-weight:600">Žiadne historické dáta</div><div style="color:var(--text-muted);font-size:13px;margin-top:6px">Spusti scraper aspoň raz.</div></div>';
+      return;
+    }
+
+    let html = '<div class="panel" style="margin-top:4px"><div class="table-wrap"><table>';
+    html += '<thead><tr>';
+    html += '<th style="text-align:left;padding-left:22px;min-width:90px">Mesiac</th>';
+    html += '<th style="text-align:left;min-width:110px">Typ</th>';
+    countries.forEach(cc => {
+      html += `<th style="min-width:130px"><span style="color:var(--orange)">${countryLabels[cc]}</span></th>`;
+    });
+    html += '</tr></thead><tbody>';
+
+    allMonths.forEach((mk, mi) => {
+      const mLabel = getMonthLabel(mk);
+      // Month header row
+      html += `<tr style="background:var(--surface2)"><td colspan="${2+countries.length}" style="padding:8px 22px;border-top:2px solid var(--border-bright)">
+        <span style="font-size:13px;font-weight:800;color:var(--orange)">${mLabel}</span>
+        <span style="font-size:11px;color:var(--text-muted);margin-left:10px;letter-spacing:1px;text-transform:uppercase">predané v mesiaci</span>
+      </td></tr>`;
+
+      TONAZ_CATS.forEach(tc => {
+        const vals = countries.map(cc => getCatValue(soldByCountry[cc][mk], tc.catName, tc.unit));
+        html += `<tr>
+          <td></td>
+          <td style="text-align:left;font-weight:700;font-size:13px;color:var(--text-dim)">
+            ${tc.label} <span style="font-size:10px;color:var(--text-muted);font-weight:600">(${tc.unit})</span>
+          </td>`;
+        vals.forEach(v => {
+          if (v === null) {
+            html += '<td><span style="color:var(--text-muted);font-size:12px">–</span></td>';
+          } else {
+            const fmt = tc.unit === 't' ? v.toFixed(2) : v.toLocaleString('sk');
+            const color = v > 0 ? 'var(--text)' : 'var(--text-muted)';
+            html += `<td><span class="mono" style="font-weight:700;font-size:13px;color:${color}">${fmt}</span></td>`;
+          }
+        });
+        html += '</tr>';
+      });
+    });
+
+    html += '</tbody></table></div></div>';
+    html += `<div class="tip" style="margin-top:16px"><span class="tip-icon">💡</span>
+      <span>Tonáž = predané balenia × hmotnosť balenia ÷ 1000. Hmotnosť sa extrahuje z názvu produktu (napr. "10 kg").
+      DreTri sa počíta v paletách. Zobrazené sú iba Hornbach predajne.</span></div>`;
+    el.innerHTML = html;
+    tonazDataCache._rendered = true;
+  } catch(e) {
+    el.innerHTML = `<div class="center-msg">
+      <div style="font-size:56px;margin-bottom:16px">⚠️</div>
+      <div style="color:var(--red);font-size:17px;font-weight:700;margin-bottom:8px">Chyba načítania</div>
+      <div style="color:var(--text-dim);font-size:13px">${e.message}</div>
+      <button class="error-btn" onclick="tonazDataCache=null;renderTonaz()">Skúsiť znova</button>
+    </div>`;
+  }
 }
 
 Chart.defaults.font.family = "'Plus Jakarta Sans', system-ui, sans-serif";
