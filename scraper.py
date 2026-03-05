@@ -35,7 +35,7 @@ COUNTRY_CONFIGS = [
     {
         "key": "SK",
         "category_url": "https://www.hornbach.sk/c/krby-radiatory-a-klimatizacie/palivove-drevo-pelety-a-brikety/S15929/",
-        "keywords": ["briketa", "brikety", "brikiet", "briket"],
+        "keywords": ["briketa", "brikety", "brikiet", "briket", "pelet", "palivov", "drevo"],
         "exclude_keywords": ["hnedouholn", "uholn", "hnedouhol"],
         "locale": "sk-SK",
         "tab_prefix": "",          # empty = original tab names, backward-compatible
@@ -44,7 +44,7 @@ COUNTRY_CONFIGS = [
     {
         "key": "CZ",
         "category_url": "https://www.hornbach.cz/c/kamna-radiatory-a-klimatizace/brikety-pelety-a-palivove-drevo/S12498/",
-        "keywords": ["briket"],
+        "keywords": ["briket", "pelet", "drevo"],  # drevo matches dřevo via NFKD
         "exclude_keywords": ["hnedouheln", "uheln"],   # catches hnědouhelné, uhelné via NFKD
         "locale": "cs-CZ",
         "tab_prefix": "CZ ",
@@ -53,7 +53,7 @@ COUNTRY_CONFIGS = [
     {
         "key": "AT",
         "category_url": "https://www.hornbach.at/c/heizen-klima-lueftung/holzbriketts-brennholz-heizpellets/S3028/",
-        "keywords": ["brikett"],
+        "keywords": ["brikett", "pellet", "brennholz"],
         "exclude_keywords": ["braunkohl"],             # catches Braunkohle, Braunkohlebrikett
         "locale": "de-AT",
         "tab_prefix": "AT ",
