@@ -267,7 +267,7 @@ async def scrape_country(context, config: dict) -> list:
 
         pp = None
         try:
-            async with asyncio.timeout(120):
+            async with asyncio.timeout(60):
                 pp = await context.new_page()
                 await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
                 await pp.wait_for_timeout(2000)
@@ -462,13 +462,14 @@ async def scrape_country(context, config: dict) -> list:
                     prod_data["stores"] = found_stores
 
         except TimeoutError:
-            print(f"  Timeout (120s) — preskoceny")
+            print(f"  Timeout (60s) — preskoceny")
         except Exception as e:
             print(f"  Chyba: {e}")
         finally:
             if pp:
                 try:
-                    await pp.close()
+                    async with asyncio.timeout(15):
+                        await pp.close()
                 except Exception:
                     pass
 
