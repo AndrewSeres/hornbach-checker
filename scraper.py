@@ -484,7 +484,7 @@ def write_to_sheets(products: list, spreadsheet, tab_prefix: str = ""):
         ws_current = spreadsheet.worksheet(tab_current)
         ws_current.clear()
     except gspread.exceptions.WorksheetNotFound:
-        ws_current = spreadsheet.add_worksheet(tab_current, rows=50, cols=20)
+        ws_current = spreadsheet.add_worksheet(tab_current, rows=200, cols=30)
 
     headers = ["Produkt", "Artikl č.", "Cena"] + [store_short_name(s) for s in all_stores]
     rows = [headers]
@@ -502,8 +502,13 @@ def write_to_sheets(products: list, spreadsheet, tab_prefix: str = ""):
     try:
         ws_hist = spreadsheet.worksheet(tab_hist)
         existing = ws_hist.get_all_values()
+        # Grow sheet if it's too small (fixes sheets created with old low defaults)
+        needed_rows = max(1000, len(existing) + len(products) * 20)
+        needed_cols = max(120, ws_hist.col_count)
+        if ws_hist.row_count < needed_rows or ws_hist.col_count < needed_cols:
+            ws_hist.resize(rows=needed_rows, cols=needed_cols)
     except gspread.exceptions.WorksheetNotFound:
-        ws_hist = spreadsheet.add_worksheet(tab_hist, rows=100, cols=60)
+        ws_hist = spreadsheet.add_worksheet(tab_hist, rows=1000, cols=120)
         existing = []
 
     row_keys = [
@@ -576,7 +581,7 @@ def write_to_sheets(products: list, spreadsheet, tab_prefix: str = ""):
             ws_diff = spreadsheet.worksheet(tab_diff)
             ws_diff.clear()
         except gspread.exceptions.WorksheetNotFound:
-            ws_diff = spreadsheet.add_worksheet(tab_diff, rows=100, cols=15)
+            ws_diff = spreadsheet.add_worksheet(tab_diff, rows=1000, cols=15)
 
         header = ws_hist_data[0]
         last_col = len(header) - 1
