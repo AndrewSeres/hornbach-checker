@@ -163,115 +163,33 @@ def store_short_name(canonical: str) -> str:
 
 
 # ── Scraper ────────────────────────────────────────────────────────────────────
-async def scrape_country(context, config: dict) -> list:
-    products = []
-    key = config["key"]
-    keywords = config["keywords"]
-    exclude_kw = config["exclude_keywords"]
-    base_url = f"https://www.hornbach.{key.lower()}"
+PRODUCT_CONCURRENCY = 4  # parallel product pages per country
 
-    print(f"\n{'='*60}")
-    print(f"  Krajina: {key}  |  {config['category_url']}")
-    print(f"{'='*60}")
 
-    page = await context.new_page()
-    await page.goto(config["category_url"], wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_timeout(3000)  # let JS settle
+async def scrape_product(context, prod: dict, idx: int, total: int, config: dict,
+                         sem: asyncio.Semaphore, print_lock: asyncio.Lock) -> dict:
+    """Scrape a single product page. Output is printed atomically under print_lock."""
+    prod_data = {
+        "name": prod["name"],
+        "ean": "",
+        "artikel_nr": "",
+        "price": "",
+        "url": prod["url"],
+        "stores": {},
+    }
+    m = re.search(r'/(\d{5,})/?', prod["url"])
+    if m:
+        prod_data["artikel_nr"] = m.group(1)
 
-    # Dismiss cookie banner
-    for sel in COOKIE_SELECTORS:
-        try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=2000):
-                await btn.click()
-                await page.wait_for_timeout(800)
-                break
-        except Exception:
-            pass
+    out = [f"\n  [{idx+1}/{total}] {prod['name']}"]
 
-    # Lazy-load products by scrolling
-    for _ in range(8):
-        await page.evaluate("window.scrollBy(0, 800)")
-        await page.wait_for_timeout(600)
-    await page.evaluate("window.scrollTo(0, 0)")
-    await page.wait_for_timeout(500)
-
-    all_links = await page.query_selector_all("a[href*='/p/']")
-    print(f"  Linkov na stranke: {len(all_links)}")
-
-    seen_urls: set[str] = set()
-    product_links = []
-
-    for link in all_links:
-        try:
-            href = await link.get_attribute("href")
-            if not href or '/p/' not in href:
-                continue
-            full_url = href if href.startswith("http") else f"{base_url}{href}"
-            if full_url in seen_urls:
-                continue
-
-            text = ""
-            try:
-                text = (await link.inner_text()).strip()
-            except Exception:
-                pass
-
-            if not text or len(text) < 5:
-                try:
-                    text = await page.evaluate("""el => {
-                        const tile = el.closest('article') || el.closest('li') ||
-                                     el.closest('[class*="Tile"]') || el.closest('[class*="tile"]') ||
-                                     el.closest('[class*="product"]') || el.parentElement;
-                        return tile ? tile.innerText : '';
-                    }""", link)
-                    text = (text or "").strip()
-                except Exception:
-                    pass
-
-            if not text:
-                continue
-
-            if matches_keywords(text, keywords, exclude_kw):
-                seen_urls.add(full_url)
-                name = next(
-                    (l.strip() for l in text.splitlines() if len(l.strip()) > 8),
-                    text[:80]
-                )
-                product_links.append({"url": full_url, "name": name[:100]})
-                print(f"  + {name[:65]}")
-        except Exception:
-            pass
-
-    await page.close()
-    print(f"\n  {len(product_links)} produktov na spracovanie")
-
-    if not product_links:
-        print("  Ziadne produkty.")
-        return products
-
-    for idx, prod in enumerate(product_links):
-        print(f"\n  [{idx+1}/{len(product_links)}] {prod['name']}")
-
-        prod_data = {
-            "name": prod["name"],
-            "ean": "",
-            "artikel_nr": "",
-            "price": "",
-            "url": prod["url"],
-            "stores": {},
-        }
-
-        m = re.search(r'/(\d{5,})/?', prod["url"])
-        if m:
-            prod_data["artikel_nr"] = m.group(1)
-
+    async with sem:
         pp = None
         try:
             async with asyncio.timeout(60):
                 pp = await context.new_page()
                 await pp.goto(prod["url"], wait_until="domcontentloaded", timeout=45000)
-                await pp.wait_for_timeout(2000)
+                await pp.wait_for_timeout(1500)
 
                 # Price
                 for price_sel in [
@@ -334,7 +252,7 @@ async def scrape_country(context, config: dict) -> list:
                     except Exception:
                         pass
 
-                print(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
+                out.append(f"  EAN: {prod_data['ean'] or '-'}  Cena: {prod_data['price'] or '-'}")
 
                 # Click availability button
                 clicked = False
@@ -343,7 +261,6 @@ async def scrape_country(context, config: dict) -> list:
                         btn = pp.get_by_text(avail_text, exact=False).first
                         if await btn.is_visible(timeout=1500):
                             await btn.click()
-                            await pp.wait_for_timeout(5000)
                             clicked = True
                             break
                     except Exception:
@@ -359,13 +276,24 @@ async def scrape_country(context, config: dict) -> list:
                             btn = pp.locator(btn_sel).first
                             if await btn.is_visible(timeout=800):
                                 await btn.click()
-                                await pp.wait_for_timeout(5000)
                                 clicked = True
                                 break
                         except Exception:
                             pass
 
-                # Try to expand "all stores" if a secondary button appeared (short timeout — skip fast if absent)
+                # Wait for modal to appear instead of fixed sleep
+                if clicked:
+                    try:
+                        await pp.wait_for_selector(
+                            "[role='dialog'], [class*='Modal'], [class*='modal'], "
+                            "[class*='Overlay'], [class*='Drawer'], [class*='Sheet']",
+                            state="visible", timeout=5000,
+                        )
+                        await pp.wait_for_timeout(500)
+                    except Exception:
+                        await pp.wait_for_timeout(2000)
+
+                # Try to expand "all stores" if a secondary button appeared
                 if clicked:
                     for alle_txt in [
                         "Alle Märkte", "Alle Filialen", "alle Märkte",
@@ -375,7 +303,7 @@ async def scrape_country(context, config: dict) -> list:
                             b2 = pp.get_by_text(alle_txt, exact=False).first
                             if await b2.is_visible(timeout=400):
                                 await b2.click()
-                                await pp.wait_for_timeout(2000)
+                                await pp.wait_for_timeout(1000)
                                 break
                         except Exception:
                             pass
@@ -418,15 +346,12 @@ async def scrape_country(context, config: dict) -> list:
                                 stock_val = None
                                 for j in range(i + 1, min(i + 30, len(lines))):
                                     jline = lines[j]
-                                    # Only break on an actual next store name, not any HORNBACH mention
                                     if canonicalize_store(jline) is not None:
                                         break
-                                    # "123 balení / Stück / ks"
                                     sm = STOCK_RE.search(jline)
                                     if sm:
                                         stock_val = int(sm.group(1).replace(" ", ""))
                                         break
-                                    # Bare number with contextual confirmation
                                     if re.match(r'^\d+$', jline):
                                         nearby = " ".join(lines[max(0, j-2):min(len(lines), j+3)]).lower()
                                         if any(w in nearby for w in [
@@ -436,11 +361,9 @@ async def scrape_country(context, config: dict) -> list:
                                         ]):
                                             stock_val = int(jline)
                                             break
-                                    # Out-of-stock phrase
                                     if OOS_RE.search(jline):
                                         stock_val = 0
                                         break
-                                    # "Dostupné > 50" / "verfügbar: 12"
                                     sm2 = STOCK_LABEL_RE.search(jline)
                                     if sm2:
                                         stock_val = int(sm2.group(1) or sm2.group(2))
@@ -449,23 +372,22 @@ async def scrape_country(context, config: dict) -> list:
                                 if canonical in found_stores:
                                     if found_stores[canonical] == "?" and stock_val is not None:
                                         found_stores[canonical] = stock_val
-                                        print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                                        out.append(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
                                 else:
                                     found_stores[canonical] = stock_val if stock_val is not None else "?"
                                     if stock_val is not None:
-                                        print(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
+                                        out.append(f"  {store_short_name(canonical)}: {found_stores[canonical]}")
                         i += 1
 
-                    # Print any stores still at "?" (no stock data found)
                     for s, v in found_stores.items():
                         if v == "?":
-                            print(f"  {store_short_name(s)}: –")
+                            out.append(f"  {store_short_name(s)}: –")
                     prod_data["stores"] = found_stores
 
         except TimeoutError:
-            print(f"  Timeout (60s) — preskoceny")
+            out.append(f"  Timeout (60s) — preskoceny")
         except Exception as e:
-            print(f"  Chyba: {e}")
+            out.append(f"  Chyba: {e}")
         finally:
             if pp:
                 try:
@@ -474,8 +396,113 @@ async def scrape_country(context, config: dict) -> list:
                 except Exception:
                     pass
 
-        products.append(prod_data)
-        await asyncio.sleep(0.5)
+    async with print_lock:
+        for line in out:
+            print(line, flush=True)
+
+    return prod_data
+
+
+async def scrape_country(context, config: dict) -> list:
+    key = config["key"]
+    keywords = config["keywords"]
+    exclude_kw = config["exclude_keywords"]
+    base_url = f"https://www.hornbach.{key.lower()}"
+
+    print(f"\n{'='*60}")
+    print(f"  Krajina: {key}  |  {config['category_url']}")
+    print(f"{'='*60}")
+
+    page = await context.new_page()
+    await page.goto(config["category_url"], wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(1500)  # let JS settle
+
+    # Dismiss cookie banner
+    for sel in COOKIE_SELECTORS:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=2000):
+                await btn.click()
+                await page.wait_for_timeout(800)
+                break
+        except Exception:
+            pass
+
+    # Lazy-load products by scrolling
+    for _ in range(8):
+        await page.evaluate("window.scrollBy(0, 800)")
+        await page.wait_for_timeout(300)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await page.wait_for_timeout(300)
+
+    all_links = await page.query_selector_all("a[href*='/p/']")
+    print(f"  Linkov na stranke: {len(all_links)}")
+
+    seen_urls: set[str] = set()
+    product_links = []
+
+    for link in all_links:
+        try:
+            href = await link.get_attribute("href")
+            if not href or '/p/' not in href:
+                continue
+            full_url = href if href.startswith("http") else f"{base_url}{href}"
+            if full_url in seen_urls:
+                continue
+
+            text = ""
+            try:
+                text = (await link.inner_text()).strip()
+            except Exception:
+                pass
+
+            if not text or len(text) < 5:
+                try:
+                    text = await page.evaluate("""el => {
+                        const tile = el.closest('article') || el.closest('li') ||
+                                     el.closest('[class*="Tile"]') || el.closest('[class*="tile"]') ||
+                                     el.closest('[class*="product"]') || el.parentElement;
+                        return tile ? tile.innerText : '';
+                    }""", link)
+                    text = (text or "").strip()
+                except Exception:
+                    pass
+
+            if not text:
+                continue
+
+            if matches_keywords(text, keywords, exclude_kw):
+                seen_urls.add(full_url)
+                name = next(
+                    (l.strip() for l in text.splitlines() if len(l.strip()) > 8),
+                    text[:80]
+                )
+                product_links.append({"url": full_url, "name": name[:100]})
+                print(f"  + {name[:65]}")
+        except Exception:
+            pass
+
+    await page.close()
+    print(f"\n  {len(product_links)} produktov na spracovanie")
+
+    if not product_links:
+        print("  Ziadne produkty.")
+        return []
+
+    sem = asyncio.Semaphore(PRODUCT_CONCURRENCY)
+    print_lock = asyncio.Lock()
+    tasks = [
+        scrape_product(context, prod, idx, len(product_links), config, sem, print_lock)
+        for idx, prod in enumerate(product_links)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    products = []
+    for r in results:
+        if isinstance(r, Exception):
+            print(f"  Chyba produktu: {r}")
+        else:
+            products.append(r)
 
     print(f"\n  {key}: {len(products)} produktov hotovo")
     return products
@@ -687,25 +714,38 @@ async def main():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        any_products = False
 
+        contexts = []
         for config in COUNTRY_CONFIGS:
-            context = await browser.new_context(
+            ctx = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
                 viewport={"width": 1280, "height": 900},
                 locale=config["locale"],
             )
-            try:
-                products = await scrape_country(context, config)
-                if products:
-                    write_to_sheets(products, spreadsheet, tab_prefix=config["tab_prefix"])
-                    any_products = True
-                else:
-                    print(f"  {config['key']}: Žiadne produkty, sheets sa neaktualizujú.")
-            finally:
-                await context.close()
+            contexts.append(ctx)
 
+        # Scrape all countries in parallel
+        country_results = await asyncio.gather(*[
+            scrape_country(ctx, config)
+            for ctx, config in zip(contexts, COUNTRY_CONFIGS)
+        ], return_exceptions=True)
+
+        for ctx in contexts:
+            try:
+                await ctx.close()
+            except Exception:
+                pass
         await browser.close()
+
+    any_products = False
+    for config, products in zip(COUNTRY_CONFIGS, country_results):
+        if isinstance(products, Exception):
+            print(f"\n  {config['key']}: Chyba - {products}")
+        elif products:
+            write_to_sheets(products, spreadsheet, tab_prefix=config["tab_prefix"])
+            any_products = True
+        else:
+            print(f"  {config['key']}: Žiadne produkty, sheets sa neaktualizujú.")
 
     if not any_products:
         sys.exit(1)
