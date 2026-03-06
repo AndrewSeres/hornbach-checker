@@ -347,6 +347,71 @@ tbody tr:hover { background: rgba(255,255,255,0.025); }
 }
 .tip-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; opacity: 0.7; }
 
+/* ── Product card layout (many stores, no horizontal scroll) ── */
+.prod-card-row {
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 22px;
+  align-items: center;
+  transition: background 0.12s;
+}
+.prod-card-row:last-child { border-bottom: none; }
+.prod-card-row:hover { background: rgba(255,255,255,0.018); }
+.prod-card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+.store-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 7px;
+}
+.sc {
+  border-radius: 10px; padding: 10px 12px;
+  text-align: center; position: relative;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.sc:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.25); }
+.sc-name {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.8px;
+  text-transform: uppercase; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 7px;
+}
+.sc-val {
+  font-size: 20px; font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: -1px; line-height: 1;
+}
+.sc-green { background: #3fb95012; border: 1px solid #3fb95038; }
+.sc-green .sc-val { color: #3fb950; }
+.sc-lime  { background: #a3e63510; border: 1px solid #a3e63528; }
+.sc-lime .sc-val  { color: #a3e635; }
+.sc-yel   { background: #d2992210; border: 1px solid #d2992228; }
+.sc-yel .sc-val   { color: #d29922; }
+.sc-red   { background: #f8514910; border: 1px solid #f8514926; }
+.sc-red .sc-val   { color: #f85149; }
+.sc-nil   { background: var(--surface2); border: 1px solid var(--border); }
+.sc-nil .sc-val   { color: var(--text-muted); }
+
+.cat-row-divider {
+  padding: 8px 24px;
+  display: flex; align-items: center; gap: 12px;
+  border-top: 2px solid transparent;
+  border-bottom: 1px solid transparent;
+}
+.cat-row-totals {
+  padding: 10px 24px 10px calc(210px + 24px + 22px);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 7px;
+  border-top: 1px dashed var(--border);
+}
+.cat-total-chip {
+  text-align: center; padding: 6px 10px; border-radius: 8px;
+  font-size: 13px; font-weight: 800; font-family: 'JetBrains Mono', monospace;
+}
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .header-inner { padding: 20px 18px; }
@@ -356,6 +421,8 @@ tbody tr:hover { background: rgba(255,255,255,0.025); }
   .card-value { font-size: 26px; }
   .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
   .chart-box { padding: 18px; }
+  .prod-card-row { grid-template-columns: 1fr; }
+  .cat-row-totals { padding-left: 24px; }
 }
 </style>
 </head>
@@ -481,6 +548,21 @@ function hashColor(str) {
   const c = `hsl(${hue},70%,58%)`;
   const c2 = `hsl(${hue},70%,46%)`;
   return { c, g: `linear-gradient(135deg,${c},${c2})` };
+}
+
+function storeChipHtml(name, val) {
+  let cls, disp;
+  if (val === null || val === undefined || val === '–' || val === '') {
+    cls = 'sc-nil'; disp = '–';
+  } else {
+    const n = Number(val);
+    if (isNaN(n))   { cls = 'sc-nil';   disp = '–'; }
+    else if (n === 0) { cls = 'sc-red';  disp = '0'; }
+    else if (n < 20)  { cls = 'sc-yel';  disp = n.toLocaleString('sk'); }
+    else if (n < 100) { cls = 'sc-lime'; disp = n.toLocaleString('sk'); }
+    else              { cls = 'sc-green'; disp = n.toLocaleString('sk'); }
+  }
+  return `<div class="sc ${cls}"><div class="sc-name">${name}</div><div class="sc-val">${disp}</div></div>`;
 }
 
 function normKey(s) {
@@ -669,42 +751,90 @@ function renderCurrent() {
   html+='</div>';
 
   html+=`<div class="panel" style="margin-top:28px">
-    <div class="panel-header"><span class="panel-title">Dostupnosť podľa produktu</span><span style="font-size:12px;color:var(--text-muted)">${products.length} produktov</span></div>
-    <div class="table-wrap"><table><thead><tr>
-      <th style="text-align:left;padding-left:22px">Produkt</th><th>Cena</th>`;
-  stores.forEach(s=>{const sc=storeColor(s);html+=`<th style="color:${sc.c}">${s}</th>`;});
-  html+='<th style="color:var(--text-dim)">Spolu</th></tr></thead><tbody>';
+    <div class="panel-header"><span class="panel-title">Dostupnosť podľa produktu</span><span style="font-size:12px;color:var(--text-muted)">${products.length} produktov</span></div>`;
 
-  let lastCat='';
-  sorted.forEach(p=>{
-    const cat=getCategory(p.name);
-    if(cat.name!==lastCat){
-      lastCat=cat.name;
-      html+=`<tr><td colspan="${colCount}" style="padding:7px 22px;background:${cat.color}14;border-top:2px solid ${cat.color}40;border-bottom:1px solid ${cat.color}28">
-        <span style="font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:${cat.color}">${cat.name}</span>
-      </td></tr>`;
-    }
-    const rowTotal=stores.reduce((s,st)=>s+(p.stocks[st]??0),0);
-    html+=`<tr>
-      <td><div class="prod-name">${p.name}</div><div class="prod-artikl mono">#${p.artikl}</div></td>
-      <td>${p.price?`<span class="price-tag mono">${p.price}</span>`:'<span style="color:var(--text-muted)">–</span>'}</td>`;
-    stores.forEach(s=>{html+=`<td>${stockBadge(p.stocks[s])}</td>`;});
-    html+=`<td><span class="mono" style="font-weight:700;font-size:13px;color:var(--text-dim)">${rowTotal.toLocaleString('sk')}</span></td>
-    </tr>`;
-  });
-
-  catSummary.forEach(({cat,total})=>{
-    html+=`<tr style="background:${cat.color}0a">
-      <td colspan="2" style="padding:8px 22px;font-size:11px;font-weight:800;color:${cat.color};letter-spacing:1px;text-transform:uppercase;border-top:2px solid ${cat.color}40">Spolu ${cat.name}</td>`;
-    stores.forEach(st=>{
-      const stTotal=products.filter(p=>getCategory(p.name).name===cat.name).reduce((s,p)=>s+(p.stocks[st]??0),0);
-      html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:13px;color:${cat.color}">${stTotal.toLocaleString('sk')}</span></td>`;
+  if(stores.length>6){
+    // ── Card layout: store chips, no horizontal scrolling ────────────────────
+    let lastCat='',lastCatColor='';
+    sorted.forEach((p,pi)=>{
+      const cat=getCategory(p.name);
+      if(cat.name!==lastCat){
+        // Print category totals for previous category
+        if(lastCat){
+          const prev=sorted.filter(pp=>getCategory(pp.name).name===lastCat);
+          html+=`<div class="cat-row-totals" style="background:${lastCatColor}08">`;
+          stores.forEach(st=>{
+            const t=prev.reduce((s,pp)=>s+(pp.stocks[st]??0),0);
+            html+=`<div class="cat-total-chip" style="background:${lastCatColor}12;border:1px solid ${lastCatColor}28;color:${lastCatColor}">Σ ${t.toLocaleString('sk')}</div>`;
+          });
+          html+=`</div>`;
+        }
+        lastCat=cat.name; lastCatColor=cat.color;
+        html+=`<div class="cat-row-divider" style="background:${cat.color}10;border-top-color:${cat.color}35;border-bottom-color:${cat.color}22">
+          <span style="font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:${cat.color}">${cat.name}</span>
+        </div>`;
+      }
+      const rowTotal=stores.reduce((s,st)=>s+(p.stocks[st]??0),0);
+      html+=`<div class="prod-card-row">
+        <div>
+          <div class="prod-name">${p.name}</div>
+          <div class="prod-artikl">#${p.artikl}</div>
+          <div class="prod-card-meta">
+            ${p.price?`<span class="price-tag">${p.price}</span>`:''}
+            <span class="mono" style="font-size:11px;color:var(--text-muted)">Σ&nbsp;${rowTotal.toLocaleString('sk')}</span>
+          </div>
+        </div>
+        <div class="store-chips">${stores.map(s=>storeChipHtml(s,p.stocks[s])).join('')}</div>
+      </div>`;
     });
-    html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:14px;color:${cat.color}">${total.toLocaleString('sk')}</span></td>
-    </tr>`;
-  });
+    // Totals for last category
+    if(lastCat){
+      const prev=sorted.filter(pp=>getCategory(pp.name).name===lastCat);
+      html+=`<div class="cat-row-totals" style="background:${lastCatColor}08">`;
+      stores.forEach(st=>{
+        const t=prev.reduce((s,pp)=>s+(pp.stocks[st]??0),0);
+        html+=`<div class="cat-total-chip" style="background:${lastCatColor}12;border:1px solid ${lastCatColor}28;color:${lastCatColor}">Σ ${t.toLocaleString('sk')}</div>`;
+      });
+      html+=`</div>`;
+    }
+  } else {
+    // ── Table layout for ≤6 stores ───────────────────────────────────────────
+    html+=`<div class="table-wrap"><table><thead><tr>
+      <th style="text-align:left;padding-left:22px">Produkt</th><th>Cena</th>`;
+    stores.forEach(s=>{const sc=storeColor(s);html+=`<th style="color:${sc.c}">${s}</th>`;});
+    html+=`<th style="color:var(--text-dim)">Spolu</th></tr></thead><tbody>`;
 
-  html+='</tbody></table></div></div>';
+    let lastCat='';
+    sorted.forEach(p=>{
+      const cat=getCategory(p.name);
+      if(cat.name!==lastCat){
+        lastCat=cat.name;
+        html+=`<tr><td colspan="${colCount}" style="padding:7px 22px;background:${cat.color}14;border-top:2px solid ${cat.color}40;border-bottom:1px solid ${cat.color}28">
+          <span style="font-size:10px;font-weight:800;letter-spacing:2.5px;text-transform:uppercase;color:${cat.color}">${cat.name}</span>
+        </td></tr>`;
+      }
+      const rowTotal=stores.reduce((s,st)=>s+(p.stocks[st]??0),0);
+      html+=`<tr>
+        <td><div class="prod-name">${p.name}</div><div class="prod-artikl mono">#${p.artikl}</div></td>
+        <td>${p.price?`<span class="price-tag mono">${p.price}</span>`:'<span style="color:var(--text-muted)">–</span>'}</td>`;
+      stores.forEach(s=>{html+=`<td>${stockBadge(p.stocks[s])}</td>`;});
+      html+=`<td><span class="mono" style="font-weight:700;font-size:13px;color:var(--text-dim)">${rowTotal.toLocaleString('sk')}</span></td>
+      </tr>`;
+    });
+    catSummary.forEach(({cat,total})=>{
+      html+=`<tr style="background:${cat.color}0a">
+        <td colspan="2" style="padding:8px 22px;font-size:11px;font-weight:800;color:${cat.color};letter-spacing:1px;text-transform:uppercase;border-top:2px solid ${cat.color}40">Spolu ${cat.name}</td>`;
+      stores.forEach(st=>{
+        const stTotal=products.filter(p=>getCategory(p.name).name===cat.name).reduce((s,p)=>s+(p.stocks[st]??0),0);
+        html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:13px;color:${cat.color}">${stTotal.toLocaleString('sk')}</span></td>`;
+      });
+      html+=`<td style="border-top:2px solid ${cat.color}40"><span class="mono" style="font-weight:800;font-size:14px;color:${cat.color}">${total.toLocaleString('sk')}</span></td>
+      </tr>`;
+    });
+    html+='</tbody></table></div>';
+  }
+
+  html+='</div>';
 
   html+=`<div class="chart-box">
     <div class="chart-header"><div><div class="chart-title">Prehľad zásob</div><div class="chart-subtitle">Rozdelenie podľa predajní a produktov</div></div></div>
@@ -741,8 +871,12 @@ function renderCurrent() {
         }
       },
       scales:{
-        x:{ ticks:{ color:'#484f58', font:{size:12,weight:600} }, grid:{ color:'#21262d', drawBorder:false } },
-        y:{ ticks:{ color:'#484f58', font:{size:11} }, grid:{ color:'#21262d11', drawBorder:false } }
+        x:{
+          ticks:{ color:'#484f58', font:{size:stores.length>6?9:11,weight:600}, maxRotation:stores.length>6?45:0, minRotation:stores.length>6?30:0 },
+          grid:{ color:'#21262d40', drawBorder:false }, border:{display:false}
+        },
+        y:{ ticks:{ color:'#484f58', font:{size:11}, padding:8, callback:v=>v>=1000?Math.round(v/100)/10+'k':v },
+          grid:{ color:'#21262d20', drawBorder:false }, border:{display:false} }
       }
     }
   });
